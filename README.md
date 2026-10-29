@@ -49,6 +49,18 @@ https://github.com/LiChenguang6/vpn-signs
 
 常见 OneBot/NapCat QQ 适配器可主动推送。AstrBot QQ 官方 API 适配器不支持这里使用的 `Context.send_message`，不保证适用；机器人须已加入目标群且可以发言。
 
+## Nano API 对 Python 客户端返回 HTTP 200 空正文（v0.3.3）
+
+已从用户提供的 Nano Android APK 的 Flutter 引擎中确认 Dart VM **3.11.5**。2026-10-30 无凭据在线检测（GitHub Actions）发现：
+
+- 当前公开 `https://nanoapi.oss-ap-northeast-1.aliyuncs.com/u.json` 返回的 `url` 仍是 `https://account.alibaba.alicdn.men/api/v1`。
+- 同一云端测试机访问公开 API，`python-urllib` 请求头收到 `HTTP 200 / application/octet-stream / Content-Length: 0`；`Dart/3.7 (dart:io)` 标识请求 `/user/checkinStatus` 收到 `HTTP 403 / application/json`（未认证时可预期）。
+- 这说明服务器会根据客户端标识返回不同内容；**旧版 aiohttp 的 Python 默认 User-Agent 是一个高度可疑的触发因素**，但不代表登录与签到已经在真实账号上验证成功。
+
+v0.3.3 将 Nano API 登录、签到状态、签到提交请求统一设置 `User-Agent: Dart/3.11 (dart:io)` 和 `Accept: application/json`，并保留 HTTPS/TLS 验证、不自动重试登录密码。模拟服务端测试已覆盖请求头。
+
+更新插件并重载后先点**测试登录**；若成功再手动签到、检查 APP 奖励，然后开启每日任务。如果仍有错误，请提供**不含凭据的报错文字**，不可将账号密码写入公开 GitHub Issues 或 Actions 脚本。
+
 ## Nano APP 登录请求协议适配（v0.3.2）
 
 原版 Nano v1.0.10 样本包含 Dio 网络库；Dio 发送 Map 请求体通常使用 JSON。V2Board 公开接口资料亦使用 JSON 作为 `POST /passport/auth/login` 的请求体，但**不能单凭 APK 字符串证明此 Nano 版本一定使用 JSON**。旧版插件以 `aiohttp(data=字典)` 发送 form 表单，与此不一致。
