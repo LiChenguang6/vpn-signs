@@ -14,7 +14,8 @@ import aiohttp
 
 PUSH_TIMEOUT = 30
 MAX_ATTEMPTS_PER_SLOT = 3
-AUTO_RETRY_SECONDS = 15 * 60
+AUTO_RETRY_SECONDS = 60 * 60
+LEGACY_AUTO_RETRY_SECONDS = 15 * 60
 
 # Nano_v8a.apk embeds Flutter/Dart 3.11.5 (android_arm64). The public Nano API
 # responds HTTP 200 with Content-Length: 0 to Python client identifiers, while
@@ -213,7 +214,7 @@ class NanoAPI:
             return "签到成功（服务端明确确认）"
         after = await self.request("GET", "/user/checkinStatus")
         if isinstance(after.get("data"), dict) and after["data"].get("can_checkin") is False:
-            return "已提交，复查显示当前不可签到；请首次在客户端核对奖励"
+            return "签到成功（提交后复查确认今日已签到；奖励以 Nano APP 为准）"
         raise CheckinError("签到结果无法确认，请在客户端核对；未记录为成功")
 
 
@@ -310,6 +311,7 @@ class Engine:
                 schedule_slot=slot,
                 scheduled_attempts=0,
                 scheduled_next_retry=0,
+                scheduled_retry_seconds=AUTO_RETRY_SECONDS,
                 manual_slot=slot,
                 manual_attempts=0,
             )
@@ -367,6 +369,7 @@ class Engine:
             "daily_time": self.config.get("daily_time", "08:00"),
             "slot": slot,
             "max_attempts": MAX_ATTEMPTS_PER_SLOT,
+            "auto_retry_minutes": AUTO_RETRY_SECONDS // 60,
             "now": now.isoformat(),
             "accounts": accounts,
             "completed": sum(a["done"] for a in active),
@@ -497,21 +500,39 @@ class Engine:
                     state[attempts_field] = 0
                     if not manual:
                         state["scheduled_next_retry"] = 0
+                        state["scheduled_retry_seconds"] = AUTO_RETRY_SECONDS
                 if state["done"]:
                     reports.append(account["name"] + "：今日已完成，不重复提交")
                     continue
-                if state[attempts_field] >= MAX_ATTEMPTS_PER_SLOT:
-                    source = "手动" if manual else "定时"
+                # Only manual runs have a per-slot attempt limit. Automatic failures
+                # must retry every hour until success (or the next calendar day);
+                # exhausting three attempts must never disable the scheduled task.
+                if manual and state[attempts_field] >= MAX_ATTEMPTS_PER_SLOT:
                     reports.append(
-                        f"{account['name']}：本计划时段{source}尝试已达 "
+                        f"{account['name']}：本计划时段手动尝试已达 "
                         f"{MAX_ATTEMPTS_PER_SLOT} 次上限；可在视图中重置"
                     )
                     continue
-                if not manual and now.timestamp() < state.get("scheduled_next_retry", 0):
-                    continue
+                if not manual:
+                    # Migrate the previous 15-minute retry deadline in-place.
+                    # The legacy persisted deadline was attempt_time + 900 seconds.
+                    # Do this only once per account/slot, including after restart.
+                    if (
+                        state.get("scheduled_attempts", 0) > 0
+                        and state.get("scheduled_retry_seconds") != AUTO_RETRY_SECONDS
+                        and state.get("scheduled_next_retry", 0)
+                    ):
+                        state["scheduled_next_retry"] += (
+                            AUTO_RETRY_SECONDS - LEGACY_AUTO_RETRY_SECONDS
+                        )
+                        state["scheduled_retry_seconds"] = AUTO_RETRY_SECONDS
+                        self.save()
+                    if now.timestamp() < state.get("scheduled_next_retry", 0):
+                        continue
                 state[attempts_field] += 1
                 if not manual:
                     state["scheduled_next_retry"] = now.timestamp() + AUTO_RETRY_SECONDS
+                    state["scheduled_retry_seconds"] = AUTO_RETRY_SECONDS
                 self.save()
                 try:
                     message = await self.run_api(account)
