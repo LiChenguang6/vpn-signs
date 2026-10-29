@@ -49,6 +49,31 @@ https://github.com/LiChenguang6/vpn-signs
 
 常见 OneBot/NapCat QQ 适配器可主动推送。AstrBot QQ 官方 API 适配器不支持这里使用的 `Context.send_message`，不保证适用；机器人须已加入目标群且可以发言。
 
+## “网络、TLS 或 JSON 响应异常”排查（v0.3.1）
+
+旧版把 DNS 解析失败、连接超时、TLS 握手失败、代理不可用，以及服务返回 HTML/空响应全部显示为同一句话。v0.3.1 在“测试登录”和签到结果中区分这些故障；**不会展示密码、令牌或服务端原始响应**。
+
+1. **先核对 API 根地址**：格式为 `https://实际服务域名/api/v1`，不是节点订阅链接，也不是 `/passport/auth/login` 完整接口路径。插件预设的 `account.alibaba.alicdn.men` 来自旧 APK 中的公开远程配置，**不保证现在仍有效**。
+2. **用群晖 AstrBot 容器自身测试**（不是 Windows 浏览器）：
+   ```sh
+   python - <<'PY'
+   import socket
+   host = "account.alibaba.alicdn.men"  # 改成面板配置的实际域名
+   try:
+       print("DNS:", [r[4][0] for r in socket.getaddrinfo(host, 443)])
+   except OSError as exc:
+       print("DNS 检测失败:", type(exc).__name__)
+   PY
+   curl -Iv --connect-timeout 10 https://account.alibaba.alicdn.men/api/v1
+   ```
+   这只是连接诊断；API 根路径返回 404/405 或其他状态不必然表示签到接口不可用。检查 TLS 验证、响应头、状态码，不要把登录密码放进命令。
+3. **如果报 DNS**：检查 NAS/Docker DNS 和实际服务域名。**如果报 TLS**：检查证书是否匹配域名、系统时间、HTTPS 代理。不要设置 `ssl=False` 绕过验证。
+4. **如果报超时或代理失败**：容器内的 `HTTPS_PROXY` / `HTTP_PROXY` 与你的 Windows Clash 设置相互独立；需确认 NAS 容器确实能访问代理服务器。
+5. **如果返回空正文或 HTML**：可能是服务端已迁移、反代/验证码页面、HTTP 200 空响应或接口协议变化。APK 字符串只能确认路径存在，不能证实当前服务端 API 可用。
+6. 修好地址后，在视图先点**测试登录**，确认成功，再点**立即签到**，最后启用每日自动签到和目标群推送。
+
+**隐私提醒**：不要公开上传 AstrBot 账号配置、抓包中的 Authorization、密码或 Cookie。插件不会自动相信远程发现的 API 地址并向其提交账号密码，改地址前请自行确认服务可信。
+
 ## 群晖运行与数据保护
 
 使用现有 AstrBot 容器和 QQ 适配器，持久化挂载 AstrBot 的 `data` 目录，并设置容器重启策略。内置视图直接使用 AstrBot 登录鉴权，无需增加端口映射；旧版独立面板端口设置已不再使用。
