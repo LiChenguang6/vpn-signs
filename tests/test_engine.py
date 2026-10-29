@@ -357,6 +357,44 @@ class APITests(unittest.IsolatedAsyncioTestCase):
 
         await self.api_with(self.app(login), check)
 
+    async def test_http_400_reads_safe_validation_message(self):
+        async def login(_request):
+            return web.json_response(
+                {"status": "fail", "message": "验证码或请求参数错误"}, status=400
+            )
+        async def check(api):
+            with self.assertRaisesRegex(CheckinError, "HTTP 400：验证码或请求参数错误"):
+                await api.login()
+        await self.api_with(self.app(login), check)
+
+    async def test_http_422_parameter_error(self):
+        async def login(_request):
+            return web.json_response({"message": "邮箱不能为空"}, status=422)
+        async def check(api):
+            with self.assertRaisesRegex(CheckinError, "HTTP 422：邮箱不能为空"):
+                await api.login()
+        await self.api_with(self.app(login), check)
+
+    async def test_http_error_never_echoes_credentials(self):
+        for leaked_value in ("test&password=中文", "one@example.test"):
+            async def login(_request):
+                return web.json_response({"message": leaked_value}, status=400)
+            async def check(api):
+                with self.assertRaisesRegex(CheckinError, "HTTP 400") as cm:
+                    await api.login()
+                self.assertNotIn(leaked_value, str(cm.exception))
+            with self.subTest(leaked_value=leaked_value):
+                await self.api_with(self.app(login), check)
+
+    async def test_http_400_invalid_response_is_generic(self):
+        async def login(_request):
+            return web.Response(body=b"<html>error</html>", status=400)
+        async def check(api):
+            with self.assertRaisesRegex(CheckinError, "HTTP 400") as cm:
+                await api.login()
+            self.assertNotIn("<html>", str(cm.exception))
+        await self.api_with(self.app(login), check)
+
     async def test_empty_and_html_responses_have_actionable_messages(self):
         cases = [
             (b"", "响应正文为空"),

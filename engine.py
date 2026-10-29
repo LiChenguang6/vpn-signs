@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 import socket
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,25 @@ class NanoAPI:
         self.login_format = login_format
         self.headers = dict(NANO_HEADERS)
 
+    def safe_response_message(self, body):
+        """Show only short, printable server validation text; never echo credentials."""
+        if not isinstance(body, dict):
+            return ""
+        for field in ("message", "msg", "error"):
+            value = body.get(field)
+            if not isinstance(value, str) or not (1 <= len(value) <= 160):
+                continue
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+                continue
+            if any(secret and secret in value for secret in (self.email, self.password)):
+                continue
+            if re.search(r"(?i)https?://|[a-z0-9._%+-]+@[a-z0-9.-]+|(?:bearer|authorization)\\s*[:=]", value):
+                continue
+            if "<" in value or ">" in value:
+                continue
+            return value
+        return ""
+
     async def request(self, method, path, data=None):
         # Dio sends Map payloads as JSON by default; legacy V2Board deployments may use forms.
         # Only the login body varies. Never silently resubmit credentials in a second format.
@@ -71,14 +91,9 @@ class NanoAPI:
                 allow_redirects=False,
                 timeout=aiohttp.ClientTimeout(total=25),
             ) as response:
-                if response.status in (401, 403):
-                    raise CheckinError("认证失败，请核对账号密码或服务端验证要求")
-                if response.status == 429:
-                    raise CheckinError("服务端请求限流，稍后再试")
-                if response.status != 200:
-                    raise CheckinError(
-                        f"接口返回 HTTP {response.status}；请核对服务地址、账号或验证码要求"
-                    )
+                # Read a bounded body for ALL status codes. V2Board can return
+                # structured JSON validation errors with HTTP 400 or 422.
+                # Never log the raw response, Authorization or password.
                 raw = bytearray()
                 async for chunk in response.content.iter_chunked(8192):
                     raw.extend(chunk)
@@ -87,6 +102,26 @@ class NanoAPI:
                 try:
                     body = json.loads(raw)
                 except (json.JSONDecodeError, UnicodeDecodeError):
+                    body = None
+                if response.status != 200:
+                    reason = self.safe_response_message(body)
+                    if response.status == 429:
+                        raise CheckinError("服务端请求限流，稍后再试")
+                    if response.status in (401, 403):
+                        raise CheckinError(
+                            "认证失败：" + (reason or "请核对登录要求、账号或密码")
+                        )
+                    if response.status in (400, 422):
+                        stage = "登录接口" if path == "/passport/auth/login" else "签到接口"
+                        raise CheckinError(
+                            f"{stage} HTTP {response.status}："
+                            + (reason or "请求参数或验证要求不符合服务端预期")
+                        )
+                    raise CheckinError(
+                        f"接口返回 HTTP {response.status}"
+                        + ("：" + reason if reason else "；请核对服务地址和接口协议")
+                    )
+                if body is None:
                     if not raw:
                         raise CheckinError(
                             "接口返回 HTTP 200，但响应正文为空；可能是服务端故障或 API 地址已变更"
