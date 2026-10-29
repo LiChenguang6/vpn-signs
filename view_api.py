@@ -14,6 +14,7 @@ class NativeViewAPI:
             ("config/save", self.save_config, ["POST"]),
             ("run", self.run, ["POST"]),
             ("login", self.login, ["POST"]),
+            ("reset-attempts", self.reset_attempts, ["POST"]),
             ("push-test", self.push, ["POST"]),
         ]:
             context.register_web_api("/nano_checkin/" + route, handler, methods, "Nano 内置视图")
@@ -69,6 +70,13 @@ class NativeViewAPI:
             return {"message": await self.engine.test_login(data.get("key"))}
 
         return await self.dispatch(login)
+
+    async def reset_attempts(self):
+        async def reset():
+            data = await self.body()
+            return {"message": await self.engine.reset_account_attempts(data.get("key"))}
+
+        return await self.dispatch(reset)
 
     async def push(self):
         async def push():
