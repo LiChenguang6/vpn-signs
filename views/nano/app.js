@@ -150,7 +150,7 @@ async function refreshStatus() {
     s.accounts.map((a) => [
       a.name,
       !a.enabled ? "已禁用" : a.done ? "任务完成" : "未完成",
-      `${a.attempts} / ${s.max_attempts}（手动 ${a.manual_attempts} / ${s.max_attempts}）`,
+      `自动 ${a.attempts} 次（失败后每小时重试） / 手动 ${a.manual_attempts} / ${s.max_attempts}`,
       a.message,
     ]),
   );
