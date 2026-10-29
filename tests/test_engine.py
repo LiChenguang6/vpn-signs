@@ -88,6 +88,107 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
             await self.engine.tick(manual=True)
         self.assertEqual(self.apis["one@example.test"].checkin.await_count, 3)
         self.assertEqual(self.apis["two@example.test"].checkin.await_count, 1)
+        # A manual 3/3 limit cannot consume or suppress the scheduled 3 attempts.
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
+        self.assertEqual(self.state()["scheduled_attempts"], 1)
+        self.assertEqual(self.state()["manual_attempts"], 3)
+
+    async def test_new_scheduled_time_resets_auto_budget_same_day(self):
+        self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
+        for index in range(3):
+            await self.engine.tick()
+            self.time += timedelta(minutes=16)
+        self.assertEqual(self.state()["scheduled_attempts"], 3)
+        self.assertIn("上限", await self.engine.tick())
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 3)
+        self.cfg["daily_time"] = "10:00"
+        self.time = self.time.replace(hour=9, minute=59)
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 3)
+        self.time += timedelta(minutes=1)
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
+        self.assertEqual(self.state()["scheduled_attempts"], 1)
+
+    async def test_new_day_reset_and_restart_after_exhaustion(self):
+        self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
+        for _ in range(3):
+            await self.engine.tick()
+            self.time += timedelta(minutes=16)
+        fresh = Engine(self.cfg, self.path, self.notify, lambda a: self.apis[a["email"]])
+        fresh.now = self.engine.now
+        self.assertIn("上限", await fresh.tick())
+        self.time += timedelta(days=1)
+        self.time = self.time.replace(hour=8, minute=0)
+        await fresh.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
+        self.assertEqual(fresh.state["accounts"][
+            account_key(self.cfg["accounts"][0], self.cfg["api_base"])
+        ]["scheduled_attempts"], 1)
+
+    async def test_reset_account_failures_and_budget_preserves_success_and_pending(self):
+        self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
+        self.notify.return_value = False
+        for _ in range(3):
+            await self.engine.tick(manual=True)
+        await self.engine.tick()
+        key = account_key(self.cfg["accounts"][0], self.cfg["api_base"])
+        other_key = account_key(self.cfg["accounts"][1], self.cfg["api_base"])
+        self.assertEqual(self.engine.overview()["accounts"][0]["manual_attempts"], 3)
+        self.assertEqual(self.engine.overview()["accounts"][0]["attempts"], 1)
+        pending_before = copy.deepcopy(self.engine.state["pending"])
+        self.assertTrue(pending_before)
+        self.assertTrue(any(h["key"] == other_key and h["outcome"] == "completed"
+                            for h in self.engine.state["history"]))
+        msg = await self.engine.reset_account_attempts(key)
+        self.assertIn("清除 4 条失败记录", msg)
+        self.assertEqual(self.engine.overview()["accounts"][0]["attempts"], 0)
+        self.assertEqual(self.engine.overview()["accounts"][0]["manual_attempts"], 0)
+        self.assertEqual(self.engine.state["pending"], pending_before)
+        self.assertEqual(len([h for h in self.engine.state["history"] if h["key"] == key]), 0)
+        self.assertEqual(len([h for h in self.engine.state["history"] if h["key"] == other_key]), 1)
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 5)
+        self.assertEqual(self.engine.overview()["accounts"][0]["attempts"], 1)
+
+    async def test_reset_does_not_remove_success_or_repeat_checkin(self):
+        await self.engine.tick()
+        key = account_key(self.cfg["accounts"][0], self.cfg["api_base"])
+        history_before = copy.deepcopy(self.engine.state["history"])
+        self.assertIn("已保留", await self.engine.reset_account_attempts(key))
+        await self.engine.tick(manual=True, key=key)
+        await self.engine.tick()
+        self.apis["one@example.test"].checkin.assert_awaited_once()
+        self.assertEqual(self.engine.state["history"], history_before)
+
+    async def test_reset_requires_existing_account_and_persists_after_restart(self):
+        with self.assertRaises(ConfigurationError):
+            await self.engine.reset_account_attempts("invalid")
+        self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
+        for _ in range(3):
+            await self.engine.tick(manual=True)
+        key = account_key(self.cfg["accounts"][0], self.cfg["api_base"])
+        await self.engine.reset_account_attempts(key)
+        fresh = Engine(self.cfg, self.path, self.notify, lambda a: self.apis[a["email"]])
+        fresh.now = self.engine.now
+        self.assertEqual(fresh.overview()["accounts"][0]["manual_attempts"], 0)
+        await fresh.tick(manual=True, key=key)
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
+
+    async def test_legacy_shared_attempts_not_block_new_auto_slot(self):
+        key = account_key(self.cfg["accounts"][0], self.cfg["api_base"])
+        self.engine.state["accounts"][key] = {
+            "day": self.time.date().isoformat(), "done": False,
+            "attempts": 3, "next_retry": self.time.timestamp() + 900,
+        }
+        self.engine.save()
+        fresh = Engine(self.cfg, self.path, self.notify, lambda a: self.apis[a["email"]])
+        fresh.now = self.engine.now
+        await fresh.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 1)
+        self.assertNotIn("attempts", fresh.state["accounts"][key])
+        self.assertEqual(fresh.state["accounts"][key]["scheduled_attempts"], 1)
 
     async def test_restart_preserves_each_account_completion(self):
         await self.engine.tick()
