@@ -1,70 +1,100 @@
-# Nano 每日签到 · AstrBot 插件（待实号验证版）
+# Nano 多账号每日签到 · AstrBot 插件
 
-[插件 ZIP 直链下载](https://raw.githubusercontent.com/LiChenguang6/download-files/main/downloads/astrbot_plugin_nano-v0.1.0.zip) · [APK 分析报告](docs/Nano-APK-analysis.md) · [面板截图（本地测试状态）](docs/Nano-panel.png) · [SHA256 校验](downloads/SHA256SUMS.txt)
+**在 AstrBot 中通过 GitHub 链接直接安装：**
 
-此插件是根据 `Nano_v8a.apk` 的静态分析独立编写的 Python 适配器，不是 Nano 原始源码，也不是修改版 APK。Nano 签到 API 的路径已在 APK 中找到；HTTP 方法、完整响应格式及令牌格式尚未通过真实账号核实。本版不能宣称已完成真实签到或 QQ 群发送。
+```text
+https://github.com/LiChenguang6/vpn-signs
+```
 
-## 已实现
+v0.2.0 支持**面板填写账号密码、多个账号、每日自动登录签到、指定 QQ 群聊推送**，不需要手动获取登录令牌，不需要设置账号环境变量。当前适配 Nano APK 暴露的 V2Board 风格接口，并非通用的所有 VPN 服务签到插件。
 
-- 每日定时执行；时区和时间在 AstrBot 插件配置面板修改。
-- 同一账号每日防重；状态保存在 AstrBot 的 `data/plugin_data/nano_checkin/state.json`。
-- 自动失败重试，间隔 15 分钟，每日最多 3 次；当天错过计划时间会补跑。
-- 指定 AstrBot 会话列表推送。推送失败后单独重试，不重新签到。
-- 带访问令牌的独立可视化面板：计划时间、今日状态、次数、待推送数量、最近 30 次记录、立即执行按钮。
-- 默认关闭签到和独立面板，避免未配置时自动请求服务。
-- API 强制 HTTPS、保持证书验证、不跟随重定向；不写入或输出账号令牌。
+[可视化面板截图（本地模拟数据）](docs/Nano-panel-v0.2.0.png) · [版本更新](CHANGELOG.md) · [早期 APK 静态分析记录](docs/Nano-APK-analysis.md)
 
-## 群晖安装（已有 AstrBot 和 QQ 适配器）
+## 在 AstrBot 中直接安装
 
-适配接口参考 AstrBot 4.29.3 官方源码，并已在真实 SDK 中通过配置加载、插件生命周期、面板鉴权和消息链构造测试；使用 Python 3.12+。不要通过本插件重新创建或覆盖你现有的 AstrBot / QQ 容器。
+1. 使用 **AstrBot 4.29.3 或更新版本、Python 3.12+**，打开「插件」→「安装插件／通过链接安装」。
+2. 粘贴上面的 GitHub **仓库链接**，安装并加载。`main.py`、`metadata.yaml`、`_conf_schema.json`、`requirements.txt` 均在仓库根目录，插件管理器会处理依赖。
+3. 打开插件 **Nano 多账号签到** 的配置页面。先保持「启用每日自动签到」关闭。
+4. 核对「默认 Nano API 根地址」，应包含 `/api/v1`。预填地址来自用户提供的 Nano 1.0.10 样本公共配置：`https://account.alibaba.alicdn.men/api/v1`。这是第三方域名，不代表 Alibaba 官方服务；地址可能已更换，请确认后再提交自己的账号密码。不要填订阅链接。
+5. 在「账号列表」点击添加 **Nano 账号**，填写备注、登录邮箱/账号和密码。可重复添加多个账号，每个账号可单独开关，并可覆盖默认 API 地址及推送群会话。密码默认遮蔽显示。
+6. 保存配置。在目标 QQ 群用 **AstrBot 管理员账号** 发送 `/nano绑定群`，该群即加入全局签到推送列表；可以绑定多个群。也可发送 `/nano会话` 获取完整会话标识，手动填入配置中的会话列表。
+7. 发送 `/nano签到` 手动验证；或按下方说明启用独立面板，逐账号点击「测试登录」「立即签到」。首次请在 Nano 原客户端核对实际奖励，并确认目标群收到结果。
+8. 验证成功后设置每日时间、时区并开启自动签到。默认 `08:00`、`Asia/Singapore`（UTC+8）。
 
-1. 下载插件 ZIP，解压后将整个 `astrbot_plugin_nano` 文件夹放到 AstrBot 持久化目录中的 `data/plugins/`。以容器内部路径为准：应能看到 `data/plugins/astrbot_plugin_nano/main.py`，不要多嵌套一层目录。也可使用 AstrBot 版本支持的本地 ZIP 安装功能。
-2. 在群晖 Container Manager 中给**现有 AstrBot 容器**添加环境变量：
-   - `NANO_AUTH_DATA`：你自己的 Nano 登录令牌。请在 Nano 官方登录流程或你自己浏览器开发者工具中取得 `auth_data` / Authorization 的真实值。不要填订阅链接，不要发到聊天或上传 GitHub。
-   - `NANO_PANEL_TOKEN`：随机生成至少 24 字符的独立面板密码，仅在启用面板时需要。不能使用账号令牌代替。
-3. 保留现有 AstrBot `data` 目录的持久化挂载；容器重启策略设置为 `unless-stopped` 或 `always`。群晖必须在计划时间保持开机，AstrBot 和 QQ 适配器也须在线。容器重启策略不能保证断电、NAS 休眠或退出 QQ 登录后的运行。
-4. 重新创建/启动容器使新环境变量生效，加载插件并确认 `aiohttp` 依赖安装成功。
-5. 在 AstrBot 的插件配置中填写：
-   - `api_base`：你已确认可信的 Nano HTTPS API 根地址，包含 `/api/v1`。该项刻意留空，不自动信任 APK 远程配置的后续变更。
-   - `auth_env`：默认 `NANO_AUTH_DATA`。
-   - `bearer_prefix`：默认 false，直接将环境变量内容作为 Authorization；仅服务要求时开启。如果令牌本身已有 `Bearer `，不要再次开启。
-   - `daily_time`：例如 `08:00`；`timezone` 默认 `Asia/Singapore`（与北京时间均为 UTC+8）。
-6. 将你的 QQ 账号设置为 **AstrBot 管理员**，在目标 QQ 群发送 `/nano会话`。把返回的完整 `unified_msg_origin` 填入 `targets` 列表，不能只填群号。常见 OneBot/NapCat 适配器可主动推送；AstrBot 官方说明 QQ 官方 API 适配器不支持这里使用的 `Context.send_message`，不保证适用于 QQ 官方机器人。
-7. 先开启 `enabled`，发送 `/nano签到`，到 Nano 原客户端核对当日状态和奖励，再检查群推送。**首次启用会在到达计划时间后自动尝试；需要手动先验时可先将时间设到当日稍后。**
-8. 验证成功后保存正式计划时间。配置更改后重新加载插件以确保面板监听等设置生效。该插件仅运行一个账号；同一数据目录只运行一个 AstrBot 实例。
+**账号密码直接填在 AstrBot 的插件配置面板即可。** 独立管理面板是可选功能，不开启也可以完成多账号配置、定时签到和群聊推送。
 
-## 可视化面板
+## 多账号与推送规则
 
-AstrBot 自带的插件配置页面用于设置开关、API、时间、时区和群会话。另有独立状态面板：
+- 每个账号独立登录、独立保存当天签到状态、尝试次数及下次重试时间；某个账号失败不阻塞其他账号。
+- 备注用于面板和群消息，默认不会推送邮箱、密码或登录令牌。
+- 同一 API 地址和邮箱不能重复添加。仅修改备注或密码不会清空当天完成状态。
+- 每账号每日最多尝试 3 次，自动重试间隔 15 分钟。服务端返回不可签到时不重复提交，但首次仍需在原客户端核对奖励。
+- 手动签到不要求打开全局自动开关，便于配置完成后先验证；被单独禁用的账号不会执行。
+- **账号专属推送会话非空时覆盖全局会话；留空时使用全局列表。** 多个账号发往同一会话的本次结果会合并推送。
+- 推送失败会留在本地待发送队列中，后续单独重试；不会因此重新登录或重复签到。全局自动任务关闭时，自动重试也暂停。
+- 机器人必须已加入目标群并具有发言权限。常见 OneBot/NapCat QQ 适配器可主动推送；AstrBot QQ 官方 API 适配器不支持这里使用的 `Context.send_message`，不保证适用。
 
-1. 设置 `NANO_PANEL_TOKEN` 后，打开 `panel_enabled`。
-2. Docker 容器内将 `panel_host` 改为 `0.0.0.0`，`panel_port` 默认为 `6198`；给现有容器增加 NAS 端口到容器端口 `6198` 的映射。`127.0.0.1` 默认仅容器自身可访问。
-3. 使用群晖 HTTPS 反向代理指向映射后的面板端口，再用你配置的 NAS 域名访问。不要直接把未加 TLS 的端口开放到公网。
-4. 输入独立面板令牌连接。令牌仅存在当前页面内存，不保存在 localStorage，不放在 URL 中。
+仅 AstrBot 管理员可执行：
 
-页面中“任务完成”包括服务端返回 `can_checkin=false` 的情况，此时表示本插件不会再提交，不等于已核实获得签到奖励。首次必须在 Nano 客户端核实。
+| 指令 | 功能 |
+| --- | --- |
+| `/nano签到` | 立即签到全部启用账号 |
+| `/nano状态` | 查看逐账号状态、时间和待推送数 |
+| `/nano会话` | 显示当前完整会话标识 |
+| `/nano绑定群` | 将当前群加入全局推送列表 |
+| `/nano解绑群` | 从全局推送列表移除当前会话；账号专属目标需在面板修改 |
+| `/nano测试推送` | 向已配置目标发送测试消息，不执行签到 |
 
-## 指令
+## 独立可视化管理面板（可选）
 
-仅 AstrBot 管理员可用：`/nano会话`、`/nano签到`、`/nano状态`。
+此面板可添加、编辑、删除多个账号，填写账号密码，设置每日时间和群会话，逐账号测试登录/立即签到，查看执行记录及推送状态。
 
-## 接口约定和限制
+1. 在 **AstrBot 插件配置页面**设置「独立面板管理密码」（至少 16 字符），并打开「启用独立可视化管理面板」。它是面板的管理密码，与 Nano 账号密码不同；不需要环境变量。
+2. 在群晖 Docker / Container Manager 中，若需从容器外访问，将 `panel_host` 设为 `0.0.0.0`，给**现有 AstrBot 容器**增加端口映射到容器端口 `6198`。默认 `127.0.0.1` 仅容器自身可访问。
+3. 使用群晖 HTTPS 反向代理指向该端口，通过自己的 NAS 域名访问，然后输入管理密码进入。
+4. 在账号列表填写邮箱和密码，点击「保存全部配置」。已有密码不会回传到浏览器；密码留空会保留该账号原密码。**更换邮箱或 API 主机后需重新输入密码**，避免将旧密码自动交给另一个地址。
+5. 保存后，点击「测试登录」只验证登录，不提交签到、不群发；点击「立即签到」会执行签到并向已设置的目标推送；「测试群聊推送」会实际发送测试消息。
 
-当前适配器尝试 `GET /user/checkinStatus`，要求 `data.can_checkin` 为布尔值；可以签到时调用 `POST /user/checkin`。明确的 `data=true`、`success=true`、`status=true` 才直接报告成功，否则复查状态。未知结构会提示协议不兼容，不凭 HTTP 200 判定成功。
+独立面板的账号、时间和推送修改即时生效并保存到同一份 AstrBot 配置，重新加载后仍有效。面板端口、监听地址和管理密码在 AstrBot 配置中修改后需重新加载插件。多页面同时编辑时，旧页面会要求刷新，避免覆盖其他页面的保存。
 
-APK 公共配置在分析时指向 `https://account.alibaba.alicdn.men/api/v1`；这是从样本读到的第三方地址，不代表 Alibaba 官方服务，也不构成可信背书。无凭据只读请求返回空响应，未证实有效 JSON 或登录契约。请先自行核对当前服务地址；本插件不会使用远程配置自动替换你填写的地址。
+## 群晖持续运行与本地数据
 
-若出现“未识别到 data.can_checkin”，需要脱敏后的成功/失败响应样本或原始 Flutter 源码进一步适配。不要绕过验证码、签名校验或服务端限制。
+保留现有 AstrBot `data` 目录的持久化挂载，将容器重启策略设置为 `unless-stopped` 或 `always`，保持 NAS、AstrBot 和 QQ 适配器在线。无需运行 Android APK 或保活手机 App，插件适用于能运行 AstrBot 的群晖 x86_64 / ARM64 设备。
 
-令牌过期必须重新登录更新容器环境变量；本版不实现密码登录和令牌刷新。网络在服务端提交成功后中断时，下一次会先查询状态，但服务器本身仍需正确实现防重。消息发送后进程在落盘前崩溃，可能导致极少数重复推送；不承诺端到端 exactly-once。
+账号密码保存在 AstrBot 本地 `data/config/nano_checkin_config.json` 中；字段遮蔽仅影响页面显示，**不等于加密存储**。插件加载及独立面板保存后设置文件权限为 `0600`。保护好 NAS 管理权限、HTTPS 入口和本地备份，不要上传真实配置或在聊天中发送密码。
 
-## 测试
+状态保存在 `data/plugin_data/nano_checkin/state.json`，不包含邮箱、密码或登录令牌。同一数据目录仅运行一个 AstrBot 实例。登录令牌只在本次任务内存中使用，不要求用户手动管理、不写入状态文件、不回传面板或群消息。
+
+## 从 v0.1.0 升级
+
+仓库已从 `download-files` 改名为 `vpn-signs`。插件内部名称保持 `nano_checkin`，可更新原插件；如果已手动装过重复副本，请只保留一个启用实例。
+
+新版本不再使用 `NANO_AUTH_DATA` 登录令牌配置。升级后在账号列表重新添加邮箱和密码。旧历史记录和待发送消息会保留；旧版没有账号身份，不能将其完成状态自动分配给新账号，首次会先向服务端查询签到状态。
+
+v0.1 的 `NANO_PANEL_TOKEN` 仅作为面板管理密码的可选兼容回退；新安装直接在插件配置设置面板管理密码即可。
+
+## 协议支持与验证范围
+
+密码登录实现采用公开 V2Board 登录控制器相同的表单约定：`POST /passport/auth/login` 发送 `email`、`password`，读取 `data.auth_data`。登录后 `GET /user/checkinStatus`，要求 `data.can_checkin` 为布尔值；允许签到时 `POST /user/checkin`。这些路径及核心字段也存在于 Nano 样本的 Flutter 原生库字符串中，但 Nano 后端可能有定制。
+
+所有账号请求保持 HTTPS 和证书验证，不跟随重定向；不绕过验证码、2FA、设备签名或服务端限制。需要额外验证的服务会报告失败，不能把 HTTP 200 或未知响应当作签到成功。
+
+已通过本地自动测试、真实 AstrBot SDK 配置/加载测试及 Chromium 桌面/手机宽度界面交互测试。测试全部使用虚拟账号和本地模拟服务，**未用真实 Nano 账号登录、未实际向用户 QQ 群发消息，群晖端仍需首次核验**。若服务响应不同，请提供脱敏的响应结构以适配，不要发送账号密码或登录令牌。
+
+## 开发验证
 
 ```sh
 python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s tests -v
 ```
 
-测试使用本地模拟服务和虚拟令牌，不调用真实签到，不发送 QQ 消息。真实服务、QQ 和群晖端到端验证仍需用户环境。
+安装了真实 AstrBot 的 Python 环境还可执行：
 
-已通过 14 项自动测试，另通过 AstrBot 4.29.3 实际 SDK 加载测试及真实 Chromium 桌面/手机宽度面板交互测试。可在安装了 AstrBot 的同一 Python 环境执行 `python3 tests/sdk_smoke.py` 重现 SDK 检查。
+```sh
+python3 tests/sdk_smoke.py
+python3 tests/install_smoke.py
+# 安装公开仓库的真实路径测试（在发布后使用）：
+python3 tests/install_smoke.py --remote
+```
+
+可选浏览器测试需另装 Playwright 和 Chromium：`python3 tests/browser_smoke.py`。面板截图展示的是本地模拟测试数据。

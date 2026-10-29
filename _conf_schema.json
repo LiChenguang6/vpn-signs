@@ -1,52 +1,100 @@
 {
   "enabled": {
     "type": "bool",
-    "description": "启用每日签到",
+    "description": "启用每日自动签到",
     "default": false
   },
   "api_base": {
     "type": "string",
-    "description": "Nano API 根地址（须手动确认 HTTPS 地址并包含 /api/v1）",
-    "default": ""
+    "description": "默认 Nano API 根地址（包含 /api/v1；账号可单独覆盖）",
+    "default": "https://account.alibaba.alicdn.men/api/v1",
+    "hint": "此为 Nano 样本公共配置中的第三方 API 地址，请确认仍为你使用的服务；不是订阅链接，也不代表 Alibaba 官方域名"
   },
-  "auth_env": {
-    "type": "string",
-    "description": "登录令牌环境变量名称（令牌仅在群晖容器环境变量填写）",
-    "default": "NANO_AUTH_DATA"
-  },
-  "bearer_prefix": {
-    "type": "bool",
-    "description": "在 Authorization 前添加 Bearer（仅服务端要求时启用）",
-    "default": false
-  },
-  "timezone": {
-    "type": "string",
-    "description": "签到时区（IANA 名称）",
-    "default": "Asia/Singapore"
+  "accounts": {
+    "type": "template_list",
+    "description": "账号列表：可添加多个账号密码",
+    "default": [],
+    "templates": {
+      "nano": {
+        "name": "Nano 账号",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "type": "string",
+            "description": "账号备注（用于结果和群推送，不建议填写邮箱）",
+            "default": ""
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用此账号",
+            "default": true
+          },
+          "email": {
+            "type": "string",
+            "description": "登录邮箱 / 账号",
+            "default": ""
+          },
+          "password": {
+            "type": "string",
+            "description": "登录密码",
+            "default": "",
+            "secret": true,
+            "hint": "仅保存在 AstrBot 本地配置中；不会上传仓库或显示在群消息中"
+          },
+          "api_base": {
+            "type": "string",
+            "description": "此账号 API 地址（留空使用默认）",
+            "default": ""
+          },
+          "bearer_prefix": {
+            "type": "bool",
+            "description": "Authorization 添加 Bearer 前缀（仅服务要求时启用）",
+            "default": false
+          },
+          "targets": {
+            "type": "list",
+            "description": "此账号专属推送会话（留空使用全局群聊列表）",
+            "default": []
+          }
+        }
+      }
+    }
   },
   "daily_time": {
     "type": "string",
-    "description": "每日签到时间 HH:MM",
+    "description": "每日签到时间（HH:MM）",
     "default": "08:00"
+  },
+  "timezone": {
+    "type": "string",
+    "description": "时区",
+    "default": "Asia/Singapore"
+  },
+  "targets": {
+    "type": "list",
+    "description": "全局推送群会话列表",
+    "default": [],
+    "hint": "在目标 QQ 群由 AstrBot 管理员发送 /nano绑定群 可直接添加；/nano会话 可获取完整标识，不能只填群号"
   },
   "panel_enabled": {
     "type": "bool",
-    "description": "启用独立可视化面板（须设置 NANO_PANEL_TOKEN）",
+    "description": "启用独立可视化管理面板",
     "default": false
+  },
+  "panel_password": {
+    "type": "string",
+    "description": "独立面板管理密码（至少 16 字符，与 Nano 账号密码不同）",
+    "default": "",
+    "secret": true
   },
   "panel_host": {
     "type": "string",
-    "description": "面板监听地址（Docker 内可改 0.0.0.0）",
+    "description": "面板监听地址（Docker 内可改为 0.0.0.0）",
     "default": "127.0.0.1"
   },
   "panel_port": {
     "type": "int",
     "description": "面板端口",
     "default": 6198
-  },
-  "targets": {
-    "type": "list",
-    "description": "推送目标会话标识列表；在目标 QQ 群由管理员发送 /nano会话 获取，不能只填群号",
-    "default": []
   }
 }

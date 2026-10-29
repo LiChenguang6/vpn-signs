@@ -1,194 +1,389 @@
 import asyncio
+import copy
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from configuration import ConfigurationError, account_key, normalize_config
 from engine import CheckinError, Engine, NanoAPI
 from panel import make_app
 
 
-class Tests(unittest.IsolatedAsyncioTestCase):
+def account(name="主账号", email="one@example.test", **kwargs):
+    return {
+        "name": name,
+        "email": email,
+        "password": "local-example-password",
+        "enabled": True,
+        "api_base": "",
+        "targets": [],
+        "bearer_prefix": False,
+        **kwargs,
+    }
+
+
+class EngineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.api = AsyncMock()
-        self.api.checkin.return_value = "签到成功"
-        self.notify = AsyncMock(return_value=True)
         self.cfg = {
             "enabled": True,
+            "api_base": "https://example.test/api/v1",
             "daily_time": "08:00",
+            "timezone": "Asia/Singapore",
             "targets": ["qq:GroupMessage:123"],
+            "accounts": [account(), account("备用账号", "two@example.test")],
         }
+        self.apis = {a["email"]: AsyncMock() for a in self.cfg["accounts"]}
+        for api in self.apis.values():
+            api.checkin.return_value = "签到成功"
+        self.notify, self.persist = AsyncMock(return_value=True), AsyncMock()
         self.path = Path(self.tmp.name) / "state.json"
-        self.engine = Engine(self.cfg, self.path, self.notify, lambda: self.api)
-        self.engine.now = lambda: datetime(
-            2026, 10, 29, 9, tzinfo=ZoneInfo("Asia/Singapore")
+        self.engine = Engine(
+            self.cfg, self.path, self.notify, lambda a: self.apis[a["email"]], self.persist
         )
+        self.time = datetime(2026, 10, 29, 9, tzinfo=ZoneInfo("Asia/Singapore"))
+        self.engine.now = lambda: self.time
 
-    async def test_concurrent_runs_submit_once(self):
+    def state(self, index=0):
+        return self.engine.state["accounts"][
+            account_key(self.cfg["accounts"][index], self.cfg["api_base"])
+        ]
+
+    async def test_multi_account_concurrency_and_no_secret_state(self):
         await asyncio.gather(self.engine.tick(), self.engine.tick(manual=True))
-        self.assertEqual(self.api.checkin.await_count, 1)
-        self.assertTrue(json.loads(self.path.read_text())["done"])
+        for api in self.apis.values():
+            api.checkin.assert_awaited_once()
+        self.assertTrue(self.state()["done"])
+        self.assertTrue(self.state(1)["done"])
+        raw = self.path.read_text()
+        self.assertNotIn("local-example-password", raw)
+        self.assertNotIn("one@example.test", raw)
+        self.assertEqual(self.engine.overview()["completed"], 2)
+        self.assertEqual(self.notify.await_count, 1)  # Results grouped per target.
 
-    async def test_restart_deduplicates(self):
+    async def test_failed_account_does_not_block_others(self):
+        self.apis["one@example.test"].checkin.side_effect = CheckinError("登录失败")
         await self.engine.tick()
-        fresh = Engine(self.cfg, self.path, self.notify, lambda: self.api)
+        self.assertFalse(self.state()["done"])
+        self.assertTrue(self.state(1)["done"])
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 1)
+        self.time += timedelta(minutes=16)
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 2)
+        self.assertEqual(self.apis["two@example.test"].checkin.await_count, 1)
+
+    async def test_account_retry_limit(self):
+        self.apis["one@example.test"].checkin.side_effect = CheckinError("认证失败")
+        for _ in range(5):
+            await self.engine.tick(manual=True)
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 3)
+        self.assertEqual(self.apis["two@example.test"].checkin.await_count, 1)
+
+    async def test_restart_preserves_each_account_completion(self):
+        await self.engine.tick()
+        fresh = Engine(self.cfg, self.path, self.notify, lambda a: self.apis[a["email"]])
         fresh.now = self.engine.now
         await fresh.tick()
-        self.assertEqual(self.api.checkin.await_count, 1)
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 1)
 
-    async def test_failed_push_retried_without_checkin(self):
-        self.notify.side_effect = RuntimeError("offline")
+    async def test_failed_push_retries_without_login(self):
+        self.notify.return_value = False
         await self.engine.tick()
-        self.assertEqual(len(self.engine.state["pending"]), 1)
-        self.notify.side_effect = None
+        self.assertEqual(len(self.engine.state["pending"]), 2)
         self.notify.return_value = True
         await self.engine.tick()
-        self.assertEqual(self.api.checkin.await_count, 1)
         self.assertEqual(self.engine.state["pending"], [])
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 1)
 
-    async def test_failure_waits_then_limits_attempts(self):
-        self.api.checkin.side_effect = CheckinError("拒绝签到")
-        await self.engine.tick()
-        await self.engine.tick()
-        self.assertEqual(self.api.checkin.await_count, 1)
-        await self.engine.tick(manual=True)
-        await self.engine.tick(manual=True)
-        await self.engine.tick(manual=True)
-        self.assertEqual(self.api.checkin.await_count, 3)
-        self.assertFalse(self.engine.state["done"])
+    async def test_hanging_platform_times_out_and_retains_outbox(self):
+        async def hang(*args):
+            await asyncio.Future()
 
-    async def test_next_day_runs(self):
-        await self.engine.tick()
-        self.engine.now = lambda: datetime(
-            2026, 10, 30, 9, tzinfo=ZoneInfo("Asia/Singapore")
-        )
-        await self.engine.tick()
-        self.assertEqual(self.api.checkin.await_count, 2)
+        self.notify.side_effect = hang
+        with patch("engine.PUSH_TIMEOUT", 0.01):
+            await self.engine.tick()
+        self.assertEqual(self.engine.overview()["completed"], 2)
+        self.assertEqual(len(self.engine.state["pending"]), 2)
 
-    async def test_disabled_and_before_schedule(self):
+    async def test_per_account_push_targets_override_global(self):
+        self.cfg["accounts"][1]["targets"] = ["qq:GroupMessage:456"]
+        await self.engine.tick()
+        messages = {call.args[0]: call.args[1] for call in self.notify.await_args_list}
+        self.assertIn("主账号", messages["qq:GroupMessage:123"])
+        self.assertNotIn("备用账号", messages["qq:GroupMessage:123"])
+        self.assertIn("备用账号", messages["qq:GroupMessage:456"])
+
+    async def test_next_day_and_rename(self):
+        await self.engine.tick()
+        self.cfg["accounts"][0]["name"] = "新备注"
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 1)
+        self.time += timedelta(days=1)
+        self.assertEqual(self.engine.overview()["completed"], 0)
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 2)
+
+    async def test_disabled_and_manual_test_before_enabling(self):
         self.cfg["enabled"] = False
+        await self.engine.tick()
+        self.apis["one@example.test"].checkin.assert_not_awaited()
+        self.cfg["accounts"][1]["enabled"] = False
         await self.engine.tick(manual=True)
-        self.cfg["enabled"] = True
+        self.apis["one@example.test"].checkin.assert_awaited_once()
+        self.apis["two@example.test"].checkin.assert_not_awaited()
+
+    async def test_before_schedule(self):
         self.cfg["daily_time"] = "10:00"
         await self.engine.tick()
-        self.api.checkin.assert_not_awaited()
+        self.apis["one@example.test"].checkin.assert_not_awaited()
 
-    async def test_panel_auth_and_execution(self):
-        token = "local-testing-token-123456789"
-        async with TestClient(TestServer(make_app(self.engine, token))) as client:
-            self.assertEqual((await client.get("/api/status")).status, 401)
-            self.assertEqual((await client.post("/api/run")).status, 401)
-            r = await client.get("/")
-            self.assertIn("Nano 每日签到", await r.text())
-            headers = {"Authorization": "Bearer " + token}
-            r = await client.get("/api/status", headers=headers)
-            self.assertNotIn(token, await r.text())
-            r = await client.post("/api/run", headers=headers)
+    async def test_selected_account_run(self):
+        key = account_key(self.cfg["accounts"][1], self.cfg["api_base"])
+        await self.engine.tick(manual=True, key=key)
+        self.apis["two@example.test"].checkin.assert_awaited_once()
+        self.apis["one@example.test"].checkin.assert_not_awaited()
+
+    async def test_login_test_never_checks_in(self):
+        key = account_key(self.cfg["accounts"][0], self.cfg["api_base"])
+        self.assertIn("登录成功", await self.engine.test_login(key))
+        self.apis["one@example.test"].login.assert_awaited_once()
+        self.apis["one@example.test"].checkin.assert_not_awaited()
+        self.notify.assert_not_awaited()
+
+    async def test_config_password_redaction_preservation_and_deletion(self):
+        public = self.engine.public_config()
+        self.assertNotIn("local-example-password", json.dumps(public))
+        self.assertTrue(public["accounts"][0]["password_set"])
+        public["accounts"][0]["name"] = "修改备注"
+        public["accounts"] = public["accounts"][:1]
+        await self.engine.update_config(public)
+        self.assertEqual(len(self.cfg["accounts"]), 1)
+        self.assertEqual(self.cfg["accounts"][0]["password"], "local-example-password")
+        self.persist.assert_awaited_once()
+        with self.assertRaisesRegex(ConfigurationError, "其他页面"):
+            await self.engine.update_config(public)
+
+    async def test_password_not_reused_after_host_or_email_change(self):
+        for change in ["email", "api_base"]:
+            public = self.engine.public_config()
+            if change == "email":
+                public["accounts"][0]["email"] = "different@example.test"
+            else:
+                public["api_base"] = "https://different.example.test/api/v1"
+            with self.assertRaises(ConfigurationError):
+                await self.engine.update_config(public)
+
+    async def test_config_save_failure_rolls_back(self):
+        old = copy.deepcopy(self.cfg)
+        self.persist.side_effect = OSError("disk full")
+        public = self.engine.public_config()
+        public["accounts"][0]["password"] = "new-local-example-password"
+        with self.assertRaises(OSError):
+            await self.engine.update_config(public)
+        self.assertEqual(self.cfg, old)
+
+    async def test_legacy_state_migration(self):
+        self.path.write_text(
+            json.dumps({"day": "2026-10-29", "done": True, "pending": [], "history": []})
+        )
+        fresh = Engine(self.cfg, self.path, self.notify)
+        self.assertEqual(fresh.state["version"], 2)
+        self.assertEqual(fresh.state["accounts"], {})
+
+    async def test_push_test_returns_platform_result(self):
+        self.notify.return_value = False
+        self.assertIn("0/1", await self.engine.test_push())
+        self.apis["one@example.test"].checkin.assert_not_awaited()
+
+    async def test_panel_auth_config_login_and_execution(self):
+        secret = "local-panel-management-password"
+        headers = {"Authorization": "Bearer " + secret}
+        async with TestClient(TestServer(make_app(self.engine, secret))) as client:
+            for method, path in [
+                ("get", "/api/config"),
+                ("put", "/api/config"),
+                ("post", "/api/login"),
+                ("post", "/api/run"),
+                ("post", "/api/push-test"),
+            ]:
+                self.assertEqual((await getattr(client, method)(path, json={})).status, 401)
+            public = await (await client.get("/api/config", headers=headers)).json()
+            self.assertNotIn("local-example-password", json.dumps(public))
+            public["accounts"][0]["password"] = "changed-test-password"
+            r = await client.put("/api/config", json=public, headers=headers)
             self.assertEqual(r.status, 200)
-            self.api.checkin.assert_awaited_once()
+            self.assertNotIn("changed-test-password", await r.text())
+            key = public["accounts"][0]["key"]
+            r = await client.post("/api/login", json={"key": key}, headers=headers)
+            self.assertIn("登录成功", (await r.json())["message"])
+            self.apis["one@example.test"].checkin.assert_not_awaited()
+            r = await client.post("/api/run", json={"key": key}, headers=headers)
+            self.assertEqual(r.status, 200)
+            self.apis["one@example.test"].checkin.assert_awaited_once()
+            r = await client.get("/api/status", headers=headers)
+            self.assertNotIn("changed-test-password", await r.text())
 
-    async def test_unknown_response_never_success(self):
-        api = NanoAPI(None, "https://example.test/api/v1", "test-token")
-        api.request = AsyncMock(return_value={"data": {"can_checkin": True}})
-        with self.assertRaises(CheckinError):
-            await api.checkin()
+    async def test_panel_rejects_invalid_json_config(self):
+        headers = {"Authorization": "Bearer local-panel-management-password"}
+        async with TestClient(
+            TestServer(make_app(self.engine, "local-panel-management-password"))
+        ) as client:
+            for data in [
+                [],
+                {"accounts": "wrong"},
+                {"daily_time": "25:00"},
+                {"timezone": "not/a-zone"},
+            ]:
+                r = await client.put("/api/config", json=data, headers=headers)
+                self.assertEqual(r.status, 400)
 
-    async def test_false_status_does_not_submit(self):
-        api = NanoAPI(None, "https://example.test/api/v1", "test-token")
-        api.request = AsyncMock(return_value={"data": {"can_checkin": False}})
-        await api.checkin()
-        api.request.assert_awaited_once_with("GET", "/user/checkinStatus")
+    async def test_duplicate_account_and_insecure_endpoint_rejected(self):
+        cfg = copy.deepcopy(self.cfg)
+        cfg["accounts"].append(account("duplicate"))
+        with self.assertRaises(ConfigurationError):
+            normalize_config(cfg)
+        cfg = copy.deepcopy(self.cfg)
+        cfg["api_base"] = "http://insecure.example.test/api/v1"
+        with self.assertRaises(ConfigurationError):
+            normalize_config(cfg)
 
-    async def test_post_then_explicit_success(self):
-        api = NanoAPI(None, "https://example.test/api/v1", "test-token")
-        api.request = AsyncMock(
-            side_effect=[{"data": {"can_checkin": True}}, {"data": True}]
-        )
-        self.assertIn("成功", await api.checkin())
-        self.assertEqual(
-            api.request.await_args_list[-1].args, ("POST", "/user/checkin")
-        )
 
-    async def test_http_redirect_never_forwards_auth(self):
+class APITests(unittest.IsolatedAsyncioTestCase):
+    async def api_with(self, app, callback, bearer=False):
+        async with TestServer(app) as server, aiohttp.ClientSession() as session:
+            api = NanoAPI(
+                session,
+                "https://example.test/api/v1",
+                "one@example.test",
+                "test&password=中文",
+                bearer,
+            )
+            api.base = str(server.make_url("/")).rstrip("/")  # Local HTTP test fixture only.
+            await callback(api)
+
+    def app(self, login, status=None, checkin=None):
+        app = web.Application()
+        app.router.add_post("/passport/auth/login", login)
+        if status:
+            app.router.add_get("/user/checkinStatus", status)
+        if checkin:
+            app.router.add_post("/user/checkin", checkin)
+        return app
+
+    async def login(self, request):
+        self.assertNotIn("Authorization", request.headers)
+        data = await request.post()
+        self.assertEqual(data["email"], "one@example.test")
+        self.assertEqual(data["password"], "test&password=中文")
+        return web.json_response({"data": {"auth_data": "local-auth-data"}})
+
+    async def test_login_form_and_full_checkin_with_chunked_response(self):
+        seen = []
+
+        async def status(request):
+            self.assertEqual(request.headers["Authorization"], "local-auth-data")
+            seen.append("status")
+            r = web.StreamResponse()
+            await r.prepare(request)
+            for chunk in [b'{"data":', b'{"can_checkin":true}}']:
+                await r.write(chunk)
+                await asyncio.sleep(0.01)
+            await r.write_eof()
+            return r
+
+        async def checkin(request):
+            self.assertEqual(request.headers["Authorization"], "local-auth-data")
+            seen.append("checkin")
+            return web.json_response({"data": True})
+
+        async def check(api):
+            self.assertIn("成功", await api.checkin())
+
+        await self.api_with(self.app(self.login, status, checkin), check)
+        self.assertEqual(seen, ["status", "checkin"])
+
+    async def test_bearer_prefix_not_duplicated(self):
+        async def login(request):
+            return web.json_response({"data": {"auth_data": "Bearer local-token"}})
+
+        async def check(api):
+            await api.login()
+            self.assertEqual(api.headers["Authorization"], "Bearer local-token")
+
+        await self.api_with(self.app(login), check, True)
+
+    async def test_login_rejected_no_checkin_and_no_secret_echo(self):
+        async def login(request):
+            return web.Response(status=401, text="test&password=中文")
+
+        async def check(api):
+            with self.assertRaises(CheckinError) as cm:
+                await api.checkin()
+            self.assertNotIn("password", str(cm.exception))
+
+        await self.api_with(self.app(login), check)
+
+    async def test_unrecognized_login_response_rejected(self):
+        async def login(request):
+            return web.json_response({"data": {"token": "not-auth-data"}})
+
+        async def check(api):
+            with self.assertRaisesRegex(CheckinError, "auth_data"):
+                await api.checkin()
+
+        await self.api_with(self.app(login), check)
+
+    async def test_already_checked_in_does_not_post(self):
+        async def status(request):
+            return web.json_response({"data": {"can_checkin": False}})
+
+        async def check(api):
+            self.assertIn("未重复提交", await api.checkin())
+
+        await self.api_with(self.app(self.login, status), check)
+
+    async def test_redirect_never_forwards_login_password(self):
         hits = []
 
-        async def redirect(request):
-            self.assertEqual(request.headers["Authorization"], "test-token")
-            raise web.HTTPFound("/stolen")
+        async def login(request):
+            raise web.HTTPTemporaryRedirect("/stolen")
 
         async def stolen(request):
             hits.append(True)
             return web.json_response({"data": True})
 
-        app = web.Application()
-        app.router.add_get("/user/checkinStatus", redirect)
-        app.router.add_get("/stolen", stolen)
-        async with TestServer(app) as server, aiohttp.ClientSession() as session:
-            api = NanoAPI(session, "https://example.test", "test-token")
-            api.base = str(server.make_url("/")).rstrip("/")  # Local test fixture only.
+        app = self.app(login)
+        app.router.add_post("/stolen", stolen)
+
+        async def check(api):
             with self.assertRaises(CheckinError):
                 await api.checkin()
+
+        await self.api_with(app, check)
         self.assertEqual(hits, [])
 
-    async def test_reject_insecure_endpoint(self):
-        for url in [
-            "http://example.test",
-            "https://user:pass@example.test",
-            "https://example.test?token=x",
-        ]:
-            with self.assertRaises(CheckinError):
-                NanoAPI(None, url, "test")
+    async def test_unknown_checkin_result_not_success(self):
+        async def status(request):
+            return web.json_response({"data": {"can_checkin": True}})
 
-    async def test_real_http_chunked_status_and_post(self):
-        seen = []
+        async def checkin(request):
+            return web.json_response({"message": "unrecognized"})
 
-        async def endpoint(request):
-            seen.append((request.method, request.path))
-            self.assertEqual(request.headers["Authorization"], "Bearer local-test")
-            body = (
-                b'{"data":{"can_checkin":true}}'
-                if request.method == "GET"
-                else b'{"data":true}'
-            )
-            r = web.StreamResponse(headers={"Content-Type": "application/json"})
-            await r.prepare(request)
-            for part in [body[:5], body[5:]]:
-                await r.write(part)
-                await asyncio.sleep(0.01)
-            await r.write_eof()
-            return r
-
-        app = web.Application()
-        app.router.add_get("/user/checkinStatus", endpoint)
-        app.router.add_post("/user/checkin", endpoint)
-        async with TestServer(app) as server, aiohttp.ClientSession() as session:
-            api = NanoAPI(session, "https://example.test", "local-test", True)
-            api.base = str(server.make_url("/")).rstrip("/")
-            self.assertIn("成功", await api.checkin())
-        self.assertEqual(
-            seen, [("GET", "/user/checkinStatus"), ("POST", "/user/checkin")]
-        )
-
-    async def test_http_auth_failure_is_reported(self):
-        async def denied(request):
-            return web.Response(status=403)
-
-        app = web.Application()
-        app.router.add_get("/user/checkinStatus", denied)
-        async with TestServer(app) as server, aiohttp.ClientSession() as session:
-            api = NanoAPI(session, "https://example.test", "test")
-            api.base = str(server.make_url("/")).rstrip("/")
-            with self.assertRaisesRegex(CheckinError, "认证失败"):
+        async def check(api):
+            with self.assertRaisesRegex(CheckinError, "无法确认"):
                 await api.checkin()
+
+        await self.api_with(self.app(self.login, status, checkin), check)
 
 
 if __name__ == "__main__":
