@@ -49,6 +49,14 @@ https://github.com/LiChenguang6/vpn-signs
 
 常见 OneBot/NapCat QQ 适配器可主动推送。AstrBot QQ 官方 API 适配器不支持这里使用的 `Context.send_message`，不保证适用；机器人须已加入目标群且可以发言。
 
+## Nano 登录返回 HTTP 400 / 422（v0.3.4）
+
+先前版本在读取错误正文前就抛出泛用异常，丢弃了服务端的 JSON 验证提示。v0.3.4 对 **400、422、401、403** 等 HTTP 状态都先读取至多 64 KiB 响应，**只显示受限长度的安全 `message` / `msg` / `error` 文字**。若文字含已有账号或密码、邮件地址、链接、控制字符或 HTML，则省略，避免将敏感数据输出到 AstrBot 视图、历史记录或 QQ 群中。
+
+已确认：公开 `GET /guest/comm/config` 返回包含 `is_recaptcha`、`is_pow` 等验证开关的服务端配置；匿名 `POST /passport/auth/login` 请求体 `{}` 返回 HTTP 422 与 JSON 校验提示。这**不能证明真实账号的 400 一定是验证码或 PoW**，需要下一次“测试登录”提供过滤后的准确提示。
+
+请先更新插件并重载，选择 JSON 登录提交格式，点击一次“测试登录”查看服务器提示。不要多次重试以免触发登录限制；若确实要求验证码等交互验证，插件需要按服务端规则提供合法的人机验证流程，不能直接绕过。
+
 ## Nano API 对 Python 客户端返回 HTTP 200 空正文（v0.3.3）
 
 已从用户提供的 Nano Android APK 的 Flutter 引擎中确认 Dart VM **3.11.5**。2026-10-30 无凭据在线检测（GitHub Actions）发现：
