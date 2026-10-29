@@ -1,0 +1,52 @@
+{
+  "enabled": {
+    "type": "bool",
+    "description": "启用每日签到",
+    "default": false
+  },
+  "api_base": {
+    "type": "string",
+    "description": "Nano API 根地址（须手动确认 HTTPS 地址并包含 /api/v1）",
+    "default": ""
+  },
+  "auth_env": {
+    "type": "string",
+    "description": "登录令牌环境变量名称（令牌仅在群晖容器环境变量填写）",
+    "default": "NANO_AUTH_DATA"
+  },
+  "bearer_prefix": {
+    "type": "bool",
+    "description": "在 Authorization 前添加 Bearer（仅服务端要求时启用）",
+    "default": false
+  },
+  "timezone": {
+    "type": "string",
+    "description": "签到时区（IANA 名称）",
+    "default": "Asia/Singapore"
+  },
+  "daily_time": {
+    "type": "string",
+    "description": "每日签到时间 HH:MM",
+    "default": "08:00"
+  },
+  "panel_enabled": {
+    "type": "bool",
+    "description": "启用独立可视化面板（须设置 NANO_PANEL_TOKEN）",
+    "default": false
+  },
+  "panel_host": {
+    "type": "string",
+    "description": "面板监听地址（Docker 内可改 0.0.0.0）",
+    "default": "127.0.0.1"
+  },
+  "panel_port": {
+    "type": "int",
+    "description": "面板端口",
+    "default": 6198
+  },
+  "targets": {
+    "type": "list",
+    "description": "推送目标会话标识列表；在目标 QQ 群由管理员发送 /nano会话 获取，不能只填群号",
+    "default": []
+  }
+}

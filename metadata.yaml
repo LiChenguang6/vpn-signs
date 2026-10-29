@@ -1,0 +1,7 @@
+name: nano_checkin
+display_name: Nano 每日签到
+desc: 每日签到、指定会话推送和可视化状态面板（服务协议待实号验证）
+version: v0.1.0
+author: local
+repo: https://github.com/LiChenguang6/download-files
+astrbot_version: '>=4.29.3'
