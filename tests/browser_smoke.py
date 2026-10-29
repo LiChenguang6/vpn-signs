@@ -67,6 +67,17 @@ async def main(root):
             await view.locator("#runAll").click()
             await view.locator("#confirmAsk").click()
             await expect(view.locator("#done")).to_have_text("1 / 2")
+            # Reset failed account from native view; preserve the completed account.
+            assert await view.locator("#accountStatus").text_content() is not None
+            await view.locator(".resetAttempts").last.click()
+            await expect(view.locator("#askText")).to_contain_text("重置当前计划时段")
+            await view.locator("#confirmAsk").click()
+            await expect(view.locator("#message")).to_contain_text("已清除")
+            assert plugin.engine.overview()["completed"] == 1
+            assert plugin.engine.overview()["accounts"][1]["manual_attempts"] == 0
+            assert not any(
+                h.get("outcome") == "failed" for h in plugin.engine.state["history"]
+            )
             await view.locator(".account .name").first.fill("修改后的本地测试账号")
             await view.locator("#save").click()
             await expect(view.locator("#message")).to_contain_text("已保存")
