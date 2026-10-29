@@ -1,5 +1,7 @@
 # Nano 每日签到 · AstrBot 插件（待实号验证版）
 
+[插件 ZIP 直链下载](https://raw.githubusercontent.com/LiChenguang6/download-files/main/downloads/astrbot_plugin_nano-v0.1.0.zip) · [APK 分析报告](docs/Nano-APK-analysis.md) · [面板截图（本地测试状态）](docs/Nano-panel.png) · [SHA256 校验](downloads/SHA256SUMS.txt)
+
 此插件是根据 `Nano_v8a.apk` 的静态分析独立编写的 Python 适配器，不是 Nano 原始源码，也不是修改版 APK。Nano 签到 API 的路径已在 APK 中找到；HTTP 方法、完整响应格式及令牌格式尚未通过真实账号核实。本版不能宣称已完成真实签到或 QQ 群发送。
 
 ## 已实现
