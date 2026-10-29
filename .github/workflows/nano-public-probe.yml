@@ -59,4 +59,40 @@ jobs:
                   print("API_HTTPERROR",exc.code,"CT",exc.headers.get("Content-Type"),"CL",exc.headers.get("Content-Length"),flush=True)
               except Exception as exc:
                   print("API_ERROR",type(exc).__name__,str(exc)[:120],flush=True)
+          print("=== PUBLIC LOGIN VALIDATION (NO ACCOUNT / PASSWORD) ===",flush=True)
+          tests=[
+            ("GET", api+"/guest/comm/config", None),
+            ("POST", api+"/passport/auth/login", b"{}"),
+          ]
+          for method,url,payload in tests:
+              print("LOGIN_PROBE", method,url,flush=True)
+              try:
+                  req=urllib.request.Request(url,data=payload,headers={
+                      "Accept":"application/json",
+                      "User-Agent":"Dart/3.11 (dart:io)",
+                      "Content-Type":"application/json"
+                  },method=method)
+                  try:
+                      response=urllib.request.urlopen(req,timeout=12,context=ssl.create_default_context())
+                  except urllib.error.HTTPError as e:
+                      response=e
+                  with response:
+                      raw=response.read(4096)
+                      print("LOGIN_RESULT",response.status,"CT",response.headers.get("Content-Type"),"LEN",len(raw),flush=True)
+                      try:
+                          body=json.loads(raw)
+                          if isinstance(body,dict):
+                              print("LOGIN_JSON_KEYS",list(body.keys())[:12],flush=True)
+                              print("LOGIN_JSON_CODE",str(body.get("code",""))[:90],flush=True)
+                              msg=body.get("message")
+                              if isinstance(msg,str):
+                                  print("LOGIN_JSON_MESSAGE",msg[:200],flush=True)
+                              data=body.get("data")
+                              if isinstance(data,dict):
+                                  print("LOGIN_DATA_KEYS",list(data.keys())[:12],flush=True)
+                          else: print("LOGIN_JSON_TYPE",type(body).__name__,flush=True)
+                      except (ValueError,UnicodeDecodeError):
+                          print("LOGIN_BODY_TYPE", "HTML" if raw.lstrip().startswith(b"<") else "nonjson",flush=True)
+              except Exception as exc:
+                  print("LOGIN_ERROR",type(exc).__name__,str(exc)[:120],flush=True)
           PY
