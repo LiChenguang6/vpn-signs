@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import aiohttp
 
 PUSH_TIMEOUT = 30
+MAX_ATTEMPTS_PER_SLOT = 3
+AUTO_RETRY_SECONDS = 15 * 60
 
 # Nano_v8a.apk embeds Flutter/Dart 3.11.5 (android_arm64). The public Nano API
 # responds HTTP 200 with Content-Length: 0 to Python client identifiers, while
@@ -272,8 +274,73 @@ class Engine:
             self.revision += 1
             return self.public_config()
 
+    @staticmethod
+    def slot_id(now, daily_time, timezone):
+        # A new configured time is a new scheduled run even on the same calendar day.
+        return f"{now.date().isoformat()}T{daily_time}@{timezone}"
+
+    async def reset_account_attempts(self, key):
+        """Reset an account's current scheduled/manual attempts and remove its failed history.
+
+        Success flags, completed history, and the notification outbox are intentionally
+        retained. A reset after today's scheduled time may permit the next minute tick.
+        """
+        async with self.lock:
+            if not isinstance(key, str) or not key:
+                raise ConfigurationError("请选择需要清除失败记录的账号")
+            matched = next(
+                (
+                    a for a in self.config.get("accounts", [])
+                    if isinstance(a, dict)
+                    and account_key(a, self.config.get("api_base", "")) == key
+                ),
+                None,
+            )
+            if matched is None:
+                raise ConfigurationError("账号不存在或配置已变化，请刷新页面")
+            before = copy.deepcopy(self.state)
+            now = self.now()
+            slot = self.slot_id(
+                now,
+                self.config.get("daily_time", "08:00"),
+                self.config.get("timezone", "Asia/Singapore"),
+            )
+            record = self.state["accounts"].setdefault(key, {})
+            record.update(
+                schedule_slot=slot,
+                scheduled_attempts=0,
+                scheduled_next_retry=0,
+                manual_slot=slot,
+                manual_attempts=0,
+            )
+            # Old v0.3.x shared counters must not block this slot after reset.
+            record.pop("attempts", None)
+            record.pop("next_retry", None)
+            if not (record.get("day") == now.date().isoformat() and record.get("done")):
+                record["message"] = ""
+            old_history = self.state.get("history", [])
+            self.state["history"] = [
+                row for row in old_history
+                if not (row.get("key") == key and row.get("outcome") == "failed")
+            ]
+            deleted = len(old_history) - len(self.state["history"])
+            try:
+                self.save()
+            except Exception:
+                self.state = before
+                raise
+            suffix = "；今日成功标记已保留，不会重复签到" if (
+                record.get("day") == now.date().isoformat() and record.get("done")
+            ) else "；若已过计划时间，自动任务可能在下一次轮询执行"
+            return f"已清除 {deleted} 条失败记录并重置本次自动、手动尝试次数" + suffix
+
     def overview(self):
         now = self.now()
+        slot = self.slot_id(
+            now,
+            self.config.get("daily_time", "08:00"),
+            self.config.get("timezone", "Asia/Singapore"),
+        )
         accounts = []
         for a in redacted_config(self.config)["accounts"]:
             key = account_key(a, self.config.get("api_base", ""))
@@ -285,7 +352,10 @@ class Engine:
                     "name": a.get("name", "账号"),
                     "enabled": a.get("enabled", True),
                     "done": state.get("done", False) if today else False,
-                    "attempts": state.get("attempts", 0) if today else 0,
+                    "attempts": state.get("scheduled_attempts", 0)
+                    if state.get("schedule_slot") == slot else 0,
+                    "manual_attempts": state.get("manual_attempts", 0)
+                    if state.get("manual_slot") == slot else 0,
                     "message": state.get("message", ""),
                     "last_time": state.get("last_time", ""),
                 }
@@ -295,6 +365,8 @@ class Engine:
             "enabled": bool(self.config.get("enabled", False)),
             "timezone": self.config.get("timezone", "Asia/Singapore"),
             "daily_time": self.config.get("daily_time", "08:00"),
+            "slot": slot,
+            "max_attempts": MAX_ATTEMPTS_PER_SLOT,
             "now": now.isoformat(),
             "accounts": accounts,
             "completed": sum(a["done"] for a in active),
@@ -398,6 +470,7 @@ class Engine:
             cfg = normalize_config(self.config, self.config)
             now = self.now()
             day = now.date().isoformat()
+            slot = self.slot_id(now, cfg["daily_time"], cfg["timezone"])
             await self.flush()
             if not manual and now.strftime("%H:%M") < cfg["daily_time"]:
                 return "等待计划时间"
@@ -413,16 +486,32 @@ class Engine:
                 account_id = account_key(account, cfg["api_base"])
                 state = self.state["accounts"].setdefault(account_id, {})
                 if state.get("day") != day:
-                    state.update(day=day, done=False, attempts=0, next_retry=0)
+                    state.update(day=day, done=False)
+                # Legacy shared attempt counters must never exhaust a new scheduled slot.
+                state.pop("attempts", None)
+                state.pop("next_retry", None)
+                slot_field = "manual_slot" if manual else "schedule_slot"
+                attempts_field = "manual_attempts" if manual else "scheduled_attempts"
+                if state.get(slot_field) != slot:
+                    state[slot_field] = slot
+                    state[attempts_field] = 0
+                    if not manual:
+                        state["scheduled_next_retry"] = 0
                 if state["done"]:
                     reports.append(account["name"] + "：今日已完成，不重复提交")
                     continue
-                if state["attempts"] >= 3:
-                    reports.append(account["name"] + "：今日已达 3 次尝试上限")
+                if state[attempts_field] >= MAX_ATTEMPTS_PER_SLOT:
+                    source = "手动" if manual else "定时"
+                    reports.append(
+                        f"{account['name']}：本计划时段{source}尝试已达 "
+                        f"{MAX_ATTEMPTS_PER_SLOT} 次上限；可在视图中重置"
+                    )
                     continue
-                if not manual and now.timestamp() < state.get("next_retry", 0):
+                if not manual and now.timestamp() < state.get("scheduled_next_retry", 0):
                     continue
-                state.update(attempts=state["attempts"] + 1, next_retry=now.timestamp() + 900)
+                state[attempts_field] += 1
+                if not manual:
+                    state["scheduled_next_retry"] = now.timestamp() + AUTO_RETRY_SECONDS
                 self.save()
                 try:
                     message = await self.run_api(account)
@@ -439,6 +528,8 @@ class Engine:
                             "time": now.isoformat(),
                             "name": account["name"],
                             "key": account_id,
+                            "slot": slot,
+                            "trigger": "manual" if manual else "scheduled",
                             "outcome": outcome,
                             "message": message,
                         }
