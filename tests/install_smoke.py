@@ -51,7 +51,7 @@ async def main(root, remote=False):
         assert info["name"] == "nano_checkin", info
         assert info["repo"] == "https://github.com/LiChenguang6/vpn-signs", info
         plugin = context.get_registered_star("nano_checkin")
-        assert plugin.version == "v0.3.0"
+        assert plugin.version == "v0.3.5"
         assert plugin.config["accounts"] == []
         assert plugin.star_cls.engine.public_config()["config_error"]
         task_before = plugin.star_cls.task
@@ -60,7 +60,7 @@ async def main(root, remote=False):
         await plugin.star_cls.engine.update_config(repaired)
         assert not plugin.star_cls.engine.public_config()["config_error"]
         assert plugin.star_cls.task is task_before
-        assert len(context.registered_web_apis) == 6
+        assert len(context.registered_web_apis) == 7
         pages = await PluginPageService(manager).discover_plugin_pages(plugin)
         assert [page.name for page in pages] == ["nano"]
         assert plugin.star_cls.task and not plugin.star_cls.task.done()
