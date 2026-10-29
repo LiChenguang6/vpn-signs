@@ -251,10 +251,14 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         cfg["api_base"] = "http://insecure.example.test/api/v1"
         with self.assertRaises(ConfigurationError):
             normalize_config(cfg)
+        cfg = copy.deepcopy(self.cfg)
+        cfg["accounts"][0]["login_format"] = "xml"
+        with self.assertRaisesRegex(ConfigurationError, "登录提交格式"):
+            normalize_config(cfg)
 
 
 class APITests(unittest.IsolatedAsyncioTestCase):
-    async def api_with(self, app, callback, bearer=False):
+    async def api_with(self, app, callback, bearer=False, login_format="json"):
         async with TestServer(app) as server, aiohttp.ClientSession() as session:
             api = NanoAPI(
                 session,
@@ -262,6 +266,7 @@ class APITests(unittest.IsolatedAsyncioTestCase):
                 "one@example.test",
                 "test&password=中文",
                 bearer,
+                login_format,
             )
             api.base = str(server.make_url("/")).rstrip("/")  # Local HTTP test fixture only.
             await callback(api)
@@ -277,12 +282,13 @@ class APITests(unittest.IsolatedAsyncioTestCase):
 
     async def login(self, request):
         self.assertNotIn("Authorization", request.headers)
-        data = await request.post()
+        self.assertTrue(request.content_type.startswith("application/json"))
+        data = await request.json()
         self.assertEqual(data["email"], "one@example.test")
         self.assertEqual(data["password"], "test&password=中文")
         return web.json_response({"data": {"auth_data": "local-auth-data"}})
 
-    async def test_login_form_and_full_checkin_with_chunked_response(self):
+    async def test_login_json_and_full_checkin_with_chunked_response(self):
         seen = []
 
         async def status(request):
@@ -306,6 +312,24 @@ class APITests(unittest.IsolatedAsyncioTestCase):
 
         await self.api_with(self.app(self.login, status, checkin), check)
         self.assertEqual(seen, ["status", "checkin"])
+
+    async def test_legacy_login_form_is_explicit_opt_in(self):
+        async def login(request):
+            self.assertEqual(request.content_type, "application/x-www-form-urlencoded")
+            data = await request.post()
+            self.assertEqual(data["email"], "one@example.test")
+            self.assertEqual(data["password"], "test&password=中文")
+            return web.json_response({"data": {"auth_data": "local-auth-data"}})
+
+        async def check(api):
+            await api.login()
+            self.assertEqual(api.headers["Authorization"], "local-auth-data")
+
+        await self.api_with(self.app(login), check, login_format="form")
+
+    async def test_invalid_login_format_rejected(self):
+        with self.assertRaises(ConfigurationError):
+            NanoAPI(None, "https://example.test/api/v1", "a", "b", login_format="xml")
 
     async def test_bearer_prefix_not_duplicated(self):
         async def login(request):

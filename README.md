@@ -49,6 +49,16 @@ https://github.com/LiChenguang6/vpn-signs
 
 常见 OneBot/NapCat QQ 适配器可主动推送。AstrBot QQ 官方 API 适配器不支持这里使用的 `Context.send_message`，不保证适用；机器人须已加入目标群且可以发言。
 
+## Nano APP 登录请求协议适配（v0.3.2）
+
+原版 Nano v1.0.10 样本包含 Dio 网络库；Dio 发送 Map 请求体通常使用 JSON。V2Board 公开接口资料亦使用 JSON 作为 `POST /passport/auth/login` 的请求体，但**不能单凭 APK 字符串证明此 Nano 版本一定使用 JSON**。旧版插件以 `aiohttp(data=字典)` 发送 form 表单，与此不一致。
+
+- **v0.3.2 登录默认改为 JSON**：`Content-Type: application/json` 和 `{"email": "...", "password": "..."}`；只用于登录请求。
+- 每个账号增加“登录提交格式”选择：**JSON（默认）** 或 **表单（旧版兼容）**。旧账号在更新后默认使用 JSON，配置的密码会保留。
+- 点击“测试登录”只提交一次，不会自动轮流试两种格式，降低错误登录的限流风险。若仍收到 HTTP 200 空正文，优先确认 APP 实时远程配置的 API 地址及服务端特定请求头；不要关闭证书验证。
+- 已知 APK 远程配置入口：`https://nanoapi.oss-ap-northeast-1.aliyuncs.com/u.json`。当前插件**不会自动将账号密码发送到远程配置返回的未知域名**；修改地址前必须核实。
+- 登录验证通过后再手动签到，最终用 APP 中的积分/流量奖励确认结果，之后才开启自动定时任务。
+
 ## “网络、TLS 或 JSON 响应异常”排查（v0.3.1）
 
 旧版把 DNS 解析失败、连接超时、TLS 握手失败、代理不可用，以及服务返回 HTML/空响应全部显示为同一句话。v0.3.1 在“测试登录”和签到结果中区分这些故障；**不会展示密码、令牌或服务端原始响应**。
@@ -84,7 +94,7 @@ https://github.com/LiChenguang6/vpn-signs
 
 ## 支持范围与验证
 
-接口采用 Nano 样本出现的 V2Board 风格路径：表单 `POST /passport/auth/login` 提交 `email`、`password`，读取 `data.auth_data`；查询 `GET /user/checkinStatus` 的布尔字段 `data.can_checkin`，允许时 `POST /user/checkin`。服务可能存在定制或额外验证，不是通用的所有 VPN 服务签到插件。
+接口采用 Nano 样本出现的 V2Board 风格路径：JSON（可选表单）`POST /passport/auth/login` 提交 `email`、`password`，读取 `data.auth_data`；查询 `GET /user/checkinStatus` 的布尔字段 `data.can_checkin`，允许时 `POST /user/checkin`。服务可能存在定制或额外验证，不是通用的所有 VPN 服务签到插件。
 
 账号请求保持 HTTPS、证书验证且不跟随重定向，不绕过验证码、2FA、设备签名或服务限制。未知响应不会仅凭 HTTP 200 判定成功。
 

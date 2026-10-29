@@ -49,6 +49,7 @@ function collect() {
       api_base: row.querySelector(".accountBase").value,
       enabled: row.querySelector(".active").checked,
       bearer_prefix: row.querySelector(".bearer").checked,
+      login_format: row.querySelector(".loginFormat").value,
       targets: lines(row.querySelector(".destinations").value),
       key: row.dataset.key,
       password_set: row.dataset.hasPassword === "true",
@@ -63,7 +64,7 @@ function renderAccounts(accounts) {
     row.dataset.key = a.key || "";
     row.dataset.hasPassword = String(!!a.password_set);
     row.innerHTML =
-      '<div class="toolbar"><label><input class="active" type="checkbox"> 启用此账号</label><div><button class="loginTest secondary">测试登录</button> <button class="run secondary">立即签到</button> <button class="remove danger">删除</button></div></div><div class="grid"><div><label>账号备注</label><input class="name" placeholder="例如：主账号"></div><div><label>登录邮箱 / 账号</label><input class="email" autocomplete="off"></div><div><label>登录密码</label><input class="password" type="password" autocomplete="new-password"></div></div><details><summary>账号专属 API 和推送设置</summary><label>API 根地址（留空使用默认地址）</label><input class="accountBase" type="url"><label><input class="bearer" type="checkbox"> 登录返回的 Authorization 需要添加 Bearer 前缀</label><label>专属推送会话（每行一个；留空使用全局目标）</label><textarea class="destinations"></textarea></details>';
+      '<div class="toolbar"><label><input class="active" type="checkbox"> 启用此账号</label><div><button class="loginTest secondary">测试登录</button> <button class="run secondary">立即签到</button> <button class="remove danger">删除</button></div></div><div class="grid"><div><label>账号备注</label><input class="name" placeholder="例如：主账号"></div><div><label>登录邮箱 / 账号</label><input class="email" autocomplete="off"></div><div><label>登录密码</label><input class="password" type="password" autocomplete="new-password"></div><div><label>登录提交格式</label><select class="loginFormat"><option value="json">JSON（推荐，Dio 默认）</option><option value="form">表单（旧版兼容）</option></select></div></div><details><summary>账号专属 API 和推送设置</summary><label>API 根地址（留空使用默认地址）</label><input class="accountBase" type="url"><label><input class="bearer" type="checkbox"> 登录返回的 Authorization 需要添加 Bearer 前缀</label><label>专属推送会话（每行一个；留空使用全局目标）</label><textarea class="destinations"></textarea></details>';
     row.querySelector(".name").value = a.name || "";
     row.querySelector(".email").value = a.email || "";
     row.querySelector(".password").value = a.password || "";
@@ -73,8 +74,9 @@ function renderAccounts(accounts) {
     row.querySelector(".accountBase").value = a.api_base || "";
     row.querySelector(".active").checked = a.enabled !== false;
     row.querySelector(".bearer").checked = !!a.bearer_prefix;
+    row.querySelector(".loginFormat").value = a.login_format || "json";
     row.querySelector(".destinations").value = (a.targets || []).join("\n");
-    for (let x of row.querySelectorAll("input,textarea"))
+    for (let x of row.querySelectorAll("input,textarea,select"))
       x.oninput = () => {
         dirty = true;
       };
