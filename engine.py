@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 
@@ -17,6 +17,7 @@ try:
         ConfigurationError,
         account_key,
         api_url,
+        configuration_error,
         normalize_config,
         redacted_config,
     )
@@ -25,6 +26,7 @@ except ImportError:
         ConfigurationError,
         account_key,
         api_url,
+        configuration_error,
         normalize_config,
         redacted_config,
     )
@@ -137,7 +139,11 @@ class Engine:
                 )
 
     def now(self):
-        return datetime.now(ZoneInfo(self.config.get("timezone", "Asia/Singapore")))
+        try:
+            zone = ZoneInfo(self.config.get("timezone", "Asia/Singapore"))
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            zone = ZoneInfo("Asia/Singapore")
+        return datetime.now(zone)
 
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +159,12 @@ class Engine:
         async with self.lock:
             if payload.get("revision", self.revision) != self.revision:
                 raise ConfigurationError("配置已被其他页面修改，请刷新后重试")
-            candidate = normalize_config(payload, self.config)
+            try:
+                candidate = normalize_config(payload, self.config)
+            except (TypeError, ValueError, AttributeError, KeyError) as exc:
+                if isinstance(exc, ConfigurationError):
+                    raise
+                raise ConfigurationError("配置字段格式错误，请修正后保存") from None
             old = copy.deepcopy(dict(self.config))
             try:
                 if self.persist:
@@ -169,7 +180,7 @@ class Engine:
     def overview(self):
         now = self.now()
         accounts = []
-        for a in self.config.get("accounts", []):
+        for a in redacted_config(self.config)["accounts"]:
             key = account_key(a, self.config.get("api_base", ""))
             state = self.state["accounts"].get(key, {})
             today = state.get("day") == now.date().isoformat()
@@ -195,6 +206,7 @@ class Engine:
             "total": len(active),
             "pending_count": len(self.state["pending"]),
             "history": self.state["history"],
+            "config_error": configuration_error(self.config),
         }
 
     async def send(self, target, text):
@@ -237,6 +249,8 @@ class Engine:
 
     async def test_login(self, key):
         async with self.lock:
+            if error := configuration_error(self.config):
+                raise ConfigurationError(error)
             account = next(
                 (
                     a
@@ -257,6 +271,8 @@ class Engine:
 
     async def test_push(self):
         async with self.lock:
+            if error := configuration_error(self.config):
+                raise ConfigurationError(error)
             destinations = list(
                 dict.fromkeys(
                     self.config.get("targets", [])
@@ -281,10 +297,9 @@ class Engine:
         async with self.lock:
             if not manual and not self.config.get("enabled", False):
                 return "自动签到已关闭"
-            try:
-                cfg = normalize_config(self.config, self.config)
-            except ConfigurationError as exc:
-                return str(exc)
+            if error := configuration_error(self.config):
+                return "任务已暂停：" + error + "；请在 AstrBot 视图中修正配置"
+            cfg = normalize_config(self.config, self.config)
             now = self.now()
             day = now.date().isoformat()
             await self.flush()

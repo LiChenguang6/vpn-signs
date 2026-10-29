@@ -1,0 +1,2 @@
+9ea65dcf2251e7ea588a2a077fcb59cc9fa1dae35f4b1554305f4d554fb743a9  astrbot_plugin_nano-v0.3.0.zip
+4e2da92dd3d924349da2fe7fa2792d52e6bc3dec3e0cc9fdb121eda5a64e9511  Nano-view-v0.3.0.png

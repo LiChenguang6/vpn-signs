@@ -19,7 +19,10 @@ def api_url(value):
     if not isinstance(value, str) or len(value) > 2048:
         raise ConfigurationError("API 地址格式错误")
     value = value.strip().rstrip("/")
-    p = urlsplit(value)
+    try:
+        p = urlsplit(value)
+    except ValueError:
+        raise ConfigurationError("API 地址格式错误") from None
     if (
         p.scheme != "https"
         or not p.hostname
@@ -39,8 +42,11 @@ def api_url(value):
 
 def account_key(account, base):
     identity = account.get("api_base") or base
+    identity = identity if isinstance(identity, str) else ""
+    email = account.get("email", "")
+    email = email if isinstance(email, str) else ""
     return hashlib.sha256(
-        (identity.rstrip("/") + "\n" + account.get("email", "").strip().casefold()).encode()
+        (identity.rstrip("/") + "\n" + email.strip().casefold()).encode()
     ).hexdigest()[:24]
 
 
@@ -100,7 +106,7 @@ def normalize_config(payload, previous=None):
         raise ConfigurationError("最多配置 50 个账号")
     existing = {
         account_key(a, old.get("api_base", "")): a
-        for a in old.get("accounts", [])
+        for a in (old.get("accounts", []) if isinstance(old.get("accounts"), list) else [])
         if isinstance(a, dict)
     }
     accounts, seen = [], set()
@@ -134,7 +140,10 @@ def normalize_config(payload, previous=None):
         }
         key = account_key(account, base)
         # Empty password from the custom panel keeps the existing secret only for the same identity.
-        account["password"] = password or existing.get(key, {}).get("password", "")
+        previous_password = existing.get(key, {}).get("password", "")
+        account["password"] = password or (
+            previous_password if isinstance(previous_password, str) else ""
+        )
         if account["enabled"] and (
             not email or not account["password"] or not (account["api_base"] or base)
         ):
@@ -147,34 +156,54 @@ def normalize_config(payload, previous=None):
     return result
 
 
+def configuration_error(config):
+    try:
+        normalize_config(config, config)
+        return ""
+    except ConfigurationError as exc:
+        return str(exc)
+    except (TypeError, ValueError, AttributeError, KeyError):
+        return "配置字段类型错误，请在视图中修正后保存"
+
+
 def redacted_config(config):
+    """Return an editable projection even when persisted config has malformed fields.
+
+    Original values are retained on disk until the user explicitly saves a repair.
+    Passwords never appear in this projection.
+    """
+
+    def string(value, default=""):
+        return value if isinstance(value, str) else default
+
+    def list_text(value):
+        if isinstance(value, str):
+            return value.splitlines()
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
     result = {
-        key: config.get(key, default)
-        for key, default in {
-            "enabled": False,
-            "api_base": "",
-            "daily_time": "08:00",
-            "timezone": "Asia/Singapore",
-            "targets": [],
-        }.items()
+        "enabled": config.get("enabled") is True,
+        "api_base": string(config.get("api_base")),
+        "daily_time": string(config.get("daily_time"), "08:00"),
+        "timezone": string(config.get("timezone"), "Asia/Singapore"),
+        "targets": list_text(config.get("targets", [])),
+        "accounts": [],
+        "config_error": configuration_error(config),
     }
-    result["accounts"] = [
-        {
-            **{
-                k: a.get(k, default)
-                for k, default in {
-                    "name": "",
-                    "email": "",
-                    "api_base": "",
-                    "enabled": True,
-                    "bearer_prefix": False,
-                    "targets": [],
-                }.items()
-            },
-            "key": account_key(a, result["api_base"]),
-            "password": "",
-            "password_set": bool(a.get("password")),
-        }
-        for a in config.get("accounts", [])
-    ]
+    raw = config.get("accounts", [])
+    for index, a in enumerate(raw if isinstance(raw, list) else []):
+        a = a if isinstance(a, dict) else {"enabled": False}
+        result["accounts"].append(
+            {
+                "name": string(a.get("name"), f"账号 {index + 1}"),
+                "email": string(a.get("email")),
+                "api_base": string(a.get("api_base")),
+                "enabled": a.get("enabled", True) is True,
+                "bearer_prefix": a.get("bearer_prefix") is True,
+                "targets": list_text(a.get("targets", [])),
+                "key": account_key(a, result["api_base"]),
+                "password": "",
+                "password_set": isinstance(a.get("password"), str) and bool(a["password"]),
+            }
+        )
     return result

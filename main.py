@@ -1,15 +1,16 @@
 import asyncio
+import json
 import os
+from datetime import datetime
 from pathlib import Path
 
-from aiohttp import web
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools
 
-from .configuration import normalize_config
+from .configuration import configuration_error
 from .engine import Engine
-from .panel import make_app
+from .view_api import NativeViewAPI
 
 
 class NanoCheckin(Star):
@@ -22,39 +23,39 @@ class NanoCheckin(Star):
             self.notify,
             persist=self.persist,
         )
-        self.task, self.runner = None, None
+        self.task = None
+        self.view_api = NativeViewAPI(context, self.engine)
 
     async def persist(self, values):
+        if configuration_error(self.config):
+            backup = self.engine.path.parent / (
+                "config-recovery-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"
+            )
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(dict(self.config), stream, ensure_ascii=False, indent=2)
         await self.config.save_config_async(values)
         path = getattr(self.config, "config_path", None)
         if path and Path(path).is_file():
-            os.chmod(path, 0o600)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                logger.warning("无法设置 Nano 配置权限，请检查本地存储权限")
 
     async def notify(self, target, text):
         return await self.context.send_message(target, MessageChain().message(text))
 
     async def initialize(self):
-        normalize_config(self.config, self.config)
+        # Invalid configuration pauses work, but never takes the native repair view offline.
+        if configuration_error(self.config):
+            logger.warning("Nano 配置有误，任务已暂停；请打开 AstrBot 视图修正，无需删除插件")
         path = getattr(self.config, "config_path", None)
         if path and Path(path).is_file():
-            os.chmod(path, 0o600)
-        if self.config.get("panel_enabled", False):
-            # v0.1 environment variable is an optional migration fallback only.
-            secret = self.config.get("panel_password", "") or os.environ.get("NANO_PANEL_TOKEN", "")
-            if len(secret) < 16:
-                raise ValueError("请先在 AstrBot 插件配置中设置至少 16 字符的独立面板管理密码")
-            self.runner = web.AppRunner(make_app(self.engine, secret))
-            await self.runner.setup()
             try:
-                await web.TCPSite(
-                    self.runner,
-                    self.config.get("panel_host", "127.0.0.1"),
-                    int(self.config.get("panel_port", 6198)),
-                ).start()
-            except Exception:
-                await self.runner.cleanup()
-                self.runner = None
-                raise
+                os.chmod(path, 0o600)
+            except OSError:
+                logger.warning("无法设置 Nano 配置权限，请检查本地存储权限")
         self.task = asyncio.create_task(self.loop())
 
     async def loop(self):
@@ -84,6 +85,9 @@ class NanoCheckin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("nano绑定群")
     async def bind(self, event: AstrMessageEvent):
+        if configuration_error(self.config):
+            yield event.plain_result("配置有误，请先在 AstrBot 视图修正，无需删除插件")
+            return
         if not event.get_group_id():
             yield event.plain_result("请在需要接收签到结果的群聊中执行此命令")
             return
@@ -98,6 +102,9 @@ class NanoCheckin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("nano解绑群")
     async def unbind(self, event: AstrMessageEvent):
+        if configuration_error(self.config):
+            yield event.plain_result("配置有误，请先在 AstrBot 视图修正，无需删除插件")
+            return
         async with self.engine.lock:
             targets = [t for t in self.config.get("targets", []) if t != event.unified_msg_origin]
             await self.persist({"targets": targets})
@@ -130,5 +137,3 @@ class NanoCheckin(Star):
                 await self.task
             except asyncio.CancelledError:
                 pass
-        if self.runner:
-            await self.runner.cleanup()

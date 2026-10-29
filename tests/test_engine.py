@@ -10,11 +10,10 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestServer
 
 from configuration import ConfigurationError, account_key, normalize_config
 from engine import CheckinError, Engine, NanoAPI
-from panel import make_app
 
 
 def account(name="主账号", email="one@example.test", **kwargs):
@@ -205,47 +204,42 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("0/1", await self.engine.test_push())
         self.apis["one@example.test"].checkin.assert_not_awaited()
 
-    async def test_panel_auth_config_login_and_execution(self):
-        secret = "local-panel-management-password"
-        headers = {"Authorization": "Bearer " + secret}
-        async with TestClient(TestServer(make_app(self.engine, secret))) as client:
-            for method, path in [
-                ("get", "/api/config"),
-                ("put", "/api/config"),
-                ("post", "/api/login"),
-                ("post", "/api/run"),
-                ("post", "/api/push-test"),
-            ]:
-                self.assertEqual((await getattr(client, method)(path, json={})).status, 401)
-            public = await (await client.get("/api/config", headers=headers)).json()
-            self.assertNotIn("local-example-password", json.dumps(public))
-            public["accounts"][0]["password"] = "changed-test-password"
-            r = await client.put("/api/config", json=public, headers=headers)
-            self.assertEqual(r.status, 200)
-            self.assertNotIn("changed-test-password", await r.text())
-            key = public["accounts"][0]["key"]
-            r = await client.post("/api/login", json={"key": key}, headers=headers)
-            self.assertIn("登录成功", (await r.json())["message"])
-            self.apis["one@example.test"].checkin.assert_not_awaited()
-            r = await client.post("/api/run", json={"key": key}, headers=headers)
-            self.assertEqual(r.status, 200)
-            self.apis["one@example.test"].checkin.assert_awaited_once()
-            r = await client.get("/api/status", headers=headers)
-            self.assertNotIn("changed-test-password", await r.text())
+    async def test_invalid_config_remains_editable_and_recovers(self):
+        cases = [
+            {"daily_time": "25:00"},
+            {"timezone": "bad/zone"},
+            {"accounts": "wrong"},
+            {"accounts": [None, {"email": 42, "api_base": {}}]},
+            {"targets": "qq:GroupMessage:123"},
+            {"api_base": ["invalid"]},
+            {"api_base": "https://[invalid"},
+            {"accounts": [{"enabled": True}]},
+        ]
+        for bad in cases:
+            with self.subTest(bad=bad):
+                original = copy.deepcopy(self.cfg)
+                self.cfg.update(bad)
+                self.assertTrue(self.engine.public_config()["config_error"])
+                self.assertTrue(self.engine.overview()["config_error"])
+                self.assertIn("暂停", await self.engine.tick(manual=True))
+                self.apis["one@example.test"].checkin.assert_not_awaited()
+                # Correcting the config in place restores the same engine instance.
+                await self.engine.update_config(original)
+                self.assertEqual(self.engine.public_config()["config_error"], "")
+        await self.engine.tick(manual=True)
+        self.apis["one@example.test"].checkin.assert_awaited_once()
 
-    async def test_panel_rejects_invalid_json_config(self):
-        headers = {"Authorization": "Bearer local-panel-management-password"}
-        async with TestClient(
-            TestServer(make_app(self.engine, "local-panel-management-password"))
-        ) as client:
-            for data in [
-                [],
-                {"accounts": "wrong"},
-                {"daily_time": "25:00"},
-                {"timezone": "not/a-zone"},
-            ]:
-                r = await client.put("/api/config", json=data, headers=headers)
-                self.assertEqual(r.status, 400)
+    async def test_invalid_save_keeps_previous_config(self):
+        old = copy.deepcopy(self.cfg)
+        for payload in [
+            {"accounts": None},
+            {"timezone": []},
+            {"targets": [123]},
+            {"daily_time": "wrong"},
+        ]:
+            with self.assertRaises(ConfigurationError):
+                await self.engine.update_config(payload)
+            self.assertEqual(self.cfg, old)
 
     async def test_duplicate_account_and_insecure_endpoint_rejected(self):
         cfg = copy.deepcopy(self.cfg)

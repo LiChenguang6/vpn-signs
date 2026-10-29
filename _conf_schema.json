@@ -75,26 +75,5 @@
     "description": "全局推送群会话列表",
     "default": [],
     "hint": "在目标 QQ 群由 AstrBot 管理员发送 /nano绑定群 可直接添加；/nano会话 可获取完整标识，不能只填群号"
-  },
-  "panel_enabled": {
-    "type": "bool",
-    "description": "启用独立可视化管理面板",
-    "default": false
-  },
-  "panel_password": {
-    "type": "string",
-    "description": "独立面板管理密码（至少 16 字符，与 Nano 账号密码不同）",
-    "default": "",
-    "secret": true
-  },
-  "panel_host": {
-    "type": "string",
-    "description": "面板监听地址（Docker 内可改为 0.0.0.0）",
-    "default": "127.0.0.1"
-  },
-  "panel_port": {
-    "type": "int",
-    "description": "面板端口",
-    "default": 6198
   }
 }

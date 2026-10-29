@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>Nano 多账号签到管理</title>
+  <style>
+    :root {
+      font-family: system-ui, sans-serif;
+      color: #e6edf3;
+      background: #101827;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      max-width: 1120px;
+      margin: 32px auto;
+      padding: 20px;
+    }
+    h1 {
+      margin: 8px 0;
+    }
+    header,
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .cards,
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+      gap: 16px;
+      margin: 20px 0;
+    }
+    .card,
+    section,
+    .account {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      padding: 22px;
+      min-width: 0;
+    }
+    section {
+      margin: 18px 0;
+    }
+    .account {
+      background: #152033;
+      margin: 16px 0;
+    }
+    .value {
+      font-size: 26px;
+      margin-top: 10px;
+    }
+    button {
+      cursor: pointer;
+      background: #52e0b4;
+      color: #102220;
+      font-weight: 700;
+      border: 0;
+      border-radius: 8px;
+      padding: 11px 16px;
+    }
+    button.secondary {
+      background: #334155;
+      color: #e2e8f0;
+    }
+    button.danger {
+      background: #713b4b;
+      color: #fff;
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+    input:not([type="checkbox"]),
+    textarea {
+      background: #0f172a;
+      border: 1px solid #64748b;
+      border-radius: 8px;
+      color: white;
+      padding: 11px;
+      width: 100%;
+      font: inherit;
+    }
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      vertical-align: middle;
+    }
+    label {
+      display: block;
+      margin: 12px 0 6px;
+    }
+    small,
+    p {
+      color: #b5c4d8;
+    }
+    small {
+      display: block;
+      line-height: 1.6;
+    }
+    textarea {
+      min-height: 76px;
+      resize: vertical;
+    }
+    .message {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      padding: 12px 0;
+    }
+    table {
+      width: 100%;
+      text-align: left;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    td,
+    th {
+      padding: 12px 6px;
+      border-bottom: 1px solid #334155;
+      overflow-wrap: anywhere;
+    }
+    .hidden {
+      display: none !important;
+    }
+    details {
+      margin: 12px 0;
+    }
+    summary {
+      cursor: pointer;
+      color: #b5c4d8;
+    }
+    #status {
+      background: #101827;
+    }
+    a {
+      color: #52e0b4;
+    }
+    .tag {
+      color: #52e0b4;
+    }
+    @media (max-width: 500px) {
+      body {
+        padding: 12px;
+      }
+      section,
+      .account {
+        padding: 14px;
+      }
+      .grid {
+        gap: 8px;
+      }
+    }
+  </style>
+  <header>
+    <div>
+      <small>NANO · ASTRBOT 内置视图</small>
+      <h1>Nano 多账号签到</h1>
+      <p>账号密码登录 · 每日自动签到 · 指定群聊推送</p>
+    </div>
+    <button id="refresh" class="secondary">刷新</button>
+  </header>
+  <div
+    id="configError"
+    class="message hidden"
+    role="alert"
+    style="background: #582c32; padding: 16px; border-radius: 12px"
+  ></div>
+  <div id="message" class="message" role="status"></div>
+  <div id="manager" class="hidden">
+    <div class="cards" id="status">
+      <div class="card">
+        自动任务
+        <div class="value" id="enabledStatus">—</div>
+      </div>
+      <div class="card">
+        计划时间
+        <div class="value" id="schedule">—</div>
+        <small id="zone">—</small>
+      </div>
+      <div class="card">
+        今日完成
+        <div class="value" id="done">—</div>
+      </div>
+      <div class="card">
+        待推送
+        <div class="value" id="pending">—</div>
+      </div>
+    </div>
+    <section>
+      <div class="toolbar">
+        <h2>自动签到与群聊推送</h2>
+        <button id="save">保存全部配置</button>
+      </div>
+      <label><input id="auto" type="checkbox" /> 开启每日自动签到</label>
+      <div class="grid">
+        <div>
+          <label for="base">默认 Nano API 根地址</label
+          ><input
+            id="base"
+            type="url"
+            placeholder="https://你的服务地址/api/v1"
+          />
+        </div>
+        <div>
+          <label for="time">每日时间</label
+          ><input id="time" type="time" value="08:00" />
+        </div>
+        <div>
+          <label for="timezone">时区</label
+          ><input id="timezone" value="Asia/Singapore" />
+        </div>
+      </div>
+      <label for="targets">全局推送群会话（每行一个）</label
+      ><textarea
+        id="targets"
+        placeholder="适配器ID:GroupMessage:群号"
+      ></textarea
+      ><small
+        >在目标群由 AstrBot 管理员发送 <b>/nano绑定群</b> 即可直接添加；也可通过
+        <b>/nano会话</b> 获取完整标识。不能仅填写 QQ 群号。</small
+      >
+      <div class="toolbar" style="margin-top: 16px">
+        <button id="pushTest" class="secondary">测试群聊推送</button
+        ><small>向已保存的全局及账号专属目标发送一条测试消息。</small>
+      </div>
+    </section>
+    <section>
+      <div class="toolbar">
+        <h2>账号列表</h2>
+        <button id="add" class="secondary">＋ 添加账号</button>
+      </div>
+      <p>
+        密码输入后保存在 AstrBot
+        本地配置；读取面板不会返回原密码。编辑已有账号时，密码留空保留原值。每次任务自动登录，无需获取或填写登录令牌。
+      </p>
+      <div id="accounts"></div>
+      <div class="toolbar">
+        <button id="runAll">立即签到全部启用账号</button
+        ><small
+          >可在开启自动任务前手动验证。每日每个账号最多尝试 3 次，自动重试间隔
+          15 分钟。</small
+        >
+      </div>
+    </section>
+    <section>
+      <h2>账号运行状态</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>账号备注</th>
+            <th>今日状态</th>
+            <th>尝试</th>
+            <th>最近结果</th>
+          </tr>
+        </thead>
+        <tbody id="accountStatus"></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>最近执行记录</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>账号</th>
+            <th>结果</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody id="history"></tbody>
+      </table>
+    </section>
+  </div>
+  <dialog
+    id="askDialog"
+    style="
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #64748b;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 90vw;
+    "
+  >
+    <p id="askText"></p>
+    <button id="confirmAsk">确认操作</button>
+    <button id="cancelAsk" class="secondary">取消</button>
+  </dialog>
+  <script type="module" src="./app.js"></script>
+</html>

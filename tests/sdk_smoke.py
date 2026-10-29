@@ -1,11 +1,8 @@
-"""Real AstrBot loader/config/lifecycle checks; never logs into a real account."""
+"""Native Dashboard API, malformed-config recovery and real SDK integration checks."""
 
 import asyncio
-import importlib
 import json
 import os
-import shutil
-import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,85 +10,80 @@ from unittest.mock import AsyncMock
 
 
 async def check(root):
-    import aiohttp
-    from astrbot.api import AstrBotConfig
+    import httpx
     from astrbot.api.event import MessageChain
-    from astrbot.core.star.updater import _PluginUpdater
+    from native_harness import dashboard_app, plugin_fixture
 
-    source = Path(__file__).resolve().parents[1]
-    metadata = _PluginUpdater.inspect_plugin_directory(source)["metadata"]
-    assert metadata["repo"] == "https://github.com/LiChenguang6/vpn-signs"
-    plugin_path = Path(root) / "data/plugins/nano_checkin"
-    shutil.copytree(
-        source,
-        plugin_path,
-        ignore=shutil.ignore_patterns(".git", "__pycache__", ".ruff_cache", "downloads"),
+    plugin, config, context, source = plugin_fixture(
+        root,
+        daily_time="broken",
+        timezone="bad/zone",
+        accounts=[
+            {
+                "name": "待修复账号",
+                "email": "sdk@example.test",
+                "password": "local-sdk-account-password",
+                "enabled": True,
+            }
+        ],
     )
-    sys.path.insert(0, root)
-    module = importlib.import_module("data.plugins.nano_checkin.main")
-    config = AstrBotConfig(
-        str(Path(root) / "config.json"),
-        schema=json.loads((source / "_conf_schema.json").read_text()),
-    )
-    assert config["accounts"] == []
-    config.update(
-        enabled=False,
-        panel_enabled=True,
-        panel_port=0,
-        panel_password="local-sdk-management-password",
-        api_base="https://example.test/api/v1",
-    )
-    context = SimpleNamespace(send_message=AsyncMock(return_value=True))
-    plugin = module.NanoCheckin(context, config)
+    await plugin.initialize()  # A malformed config must not prevent startup.
+    assert len(context.registered_web_apis) == 6
+    assert plugin.task and not plugin.task.done()
+    app = dashboard_app(plugin, context, source)
+    base = "/api/v1/plugins/extensions/nano_checkin/"
     try:
-        await plugin.initialize()
-        async with aiohttp.ClientSession() as session:
-            url = f"http://127.0.0.1:{plugin.runner.addresses[0][1]}"
-            async with session.get(url + "/api/config") as r:
-                assert r.status == 401
-            headers = {"Authorization": "Bearer local-sdk-management-password"}
-            async with session.get(url + "/api/config", headers=headers) as r:
-                c = await r.json()
-            c["accounts"] = [
-                {
-                    "name": "SDK 测试账号",
-                    "email": "sdk@example.test",
-                    "password": "local-sdk-account-password",
-                    "enabled": True,
-                    "targets": [],
-                }
-            ]
-            async with session.put(url + "/api/config", headers=headers, json=c) as r:
-                assert r.status == 200, await r.text()
-                assert "local-sdk-account-password" not in await r.text()
-            stored = json.loads(Path(config.config_path).read_text(encoding="utf-8-sig"))
-            assert stored["accounts"][0]["password"] == "local-sdk-account-password"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            assert (await client.get(base + "config")).status_code == 401
+            headers = {"X-Test-Dashboard-Session": "local-admin"}
+            c = (await client.get(base + "config", headers=headers)).json()
+            assert c["config_error"] and "local-sdk-account-password" not in json.dumps(c)
+            assert (await client.get(base + "status", headers=headers)).json()["config_error"]
+            r = await client.post(base + "run", headers=headers, json={})
+            assert "暂停" in r.json()["message"]
+            c.update(daily_time="08:00", timezone="Asia/Singapore")
+            r = await client.post(base + "config/save", headers=headers, json=c)
+            assert r.status_code == 200, r.text
+            c = r.json()
+            assert not c["config_error"]
+            assert config["accounts"][0]["password"] == "local-sdk-account-password"
+            backups = list(plugin.engine.path.parent.glob("config-recovery-*.json"))
+            assert len(backups) == 1 and backups[0].stat().st_mode & 0o777 == 0o600
+            assert json.loads(backups[0].read_text())["daily_time"] == "broken"
+            # Invalid edits return 400 without taking the API, task or saved config offline.
+            for bad in [{"daily_time": "99:99"}, {"accounts": "wrong"}, {"timezone": []}]:
+                r = await client.post(base + "config/save", headers=headers, json=bad)
+                assert r.status_code == 400, r.text
+                assert (await client.get(base + "status", headers=headers)).status_code == 200
+            api = AsyncMock()
+            api.checkin.return_value = "本地模拟成功"
+            plugin.engine.api_factory = lambda a: api
+            r = await client.post(
+                base + "login", headers=headers, json={"key": c["accounts"][0]["key"]}
+            )
+            assert "登录成功" in r.json()["message"]
+            api.checkin.assert_not_awaited()
+            await client.post(base + "run", headers=headers, json={})
+            api.checkin.assert_awaited_once()
+            assert (await client.get(base + "status", headers=headers)).json()["completed"] == 1
             assert Path(config.config_path).stat().st_mode & 0o777 == 0o600
-        assert not plugin.engine.state[
-            "accounts"
-        ]  # Auto scheduling is off; no account login occurred.
-        await plugin.notify("local:GroupMessage:123", "local test only")
-        args = context.send_message.await_args.args
-        assert isinstance(args[1], MessageChain)
-        assert args[1].chain[0].text == "local test only"
+        await plugin.notify("local:GroupMessage:123", "local test")
+        assert isinstance(context.send_message.await_args.args[1], MessageChain)
         event = SimpleNamespace(
             unified_msg_origin="local:GroupMessage:456",
             get_group_id=lambda: "456",
-            plain_result=lambda text: text,
+            plain_result=lambda x: x,
         )
-        result = [text async for text in plugin.bind(event)]
-        assert "已将本群" in result[0]
-        assert (
-            "local:GroupMessage:456"
-            in json.loads(Path(config.config_path).read_text(encoding="utf-8-sig"))["targets"]
-        )
+        [text async for text in plugin.bind(event)]
+        assert "local:GroupMessage:456" in config["targets"]
         [text async for text in plugin.unbind(event)]
-        assert "local:GroupMessage:456" not in config["targets"]
     finally:
         await plugin.terminate()
     assert plugin.task.done()
     print(
-        "AstrBot 4.29.3: repository metadata, actual plugin package import, multi-account schema, password save/redaction, lifecycle, group binding and MessageChain PASS"
+        "Native AstrBot routing: invalid-config startup, redacted repair view APIs, protected backup, rejection without unload, in-place recovery, login, check-in and group binding PASS"
     )
 
 
