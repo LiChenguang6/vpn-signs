@@ -38,19 +38,29 @@ class CheckinError(Exception):
 
 
 class NanoAPI:
-    def __init__(self, session, base_url, email, password, bearer=False):
+    def __init__(self, session, base_url, email, password, bearer=False, login_format="json"):
         self.session = session
         self.base = api_url(base_url)
         self.email, self.password, self.bearer = email, password, bearer
+        if login_format not in ("json", "form"):
+            raise ConfigurationError("登录请求格式必须是 json 或 form")
+        self.login_format = login_format
         self.headers = {}
 
     async def request(self, method, path, data=None):
+        # Dio sends Map payloads as JSON by default; legacy V2Board deployments may use forms.
+        # Only the login body varies. Never silently resubmit credentials in a second format.
+        payload = (
+            {"json": data}
+            if path == "/passport/auth/login" and data is not None and self.login_format == "json"
+            else {"data": data}
+        )
         try:
             async with self.session.request(
                 method,
                 self.base + path,
                 headers=self.headers,
-                data=data,
+                **payload,
                 allow_redirects=False,
                 timeout=aiohttp.ClientTimeout(total=25),
             ) as response:
@@ -287,6 +297,7 @@ class Engine:
                 account.get("email", ""),
                 account.get("password", ""),
                 account.get("bearer_prefix", False),
+                account.get("login_format", "json"),
             )
             return await (api.login() if login_only else api.checkin())
 
