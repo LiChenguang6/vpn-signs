@@ -1,7 +1,7 @@
 name: nano_checkin
 display_name: Nano 多账号签到
 desc: 账号密码登录、多账号每日签到、指定群聊推送和AstrBot 内置视图
-version: v0.3.5
+version: v0.3.6
 author: LiChenguang6
 repo: https://github.com/LiChenguang6/vpn-signs
 astrbot_version: '>=4.29.3'
