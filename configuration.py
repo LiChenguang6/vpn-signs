@@ -127,6 +127,9 @@ def normalize_config(payload, previous=None):
             or "\r" in email
         ):
             raise ConfigurationError("账号名称、邮箱或密码格式错误")
+        login_format = item.get("login_format", "json")
+        if login_format not in ("json", "form"):
+            raise ConfigurationError("登录提交格式必须是 json 或 form")
         account = {
             "__template_key": "nano",
             "name": name,
@@ -136,6 +139,7 @@ def normalize_config(payload, previous=None):
             else "",
             "enabled": boolean(item.get("enabled", True), "账号启用"),
             "bearer_prefix": boolean(item.get("bearer_prefix", False), "Bearer 前缀"),
+            "login_format": login_format,
             "targets": targets(item.get("targets", [])),
         }
         key = account_key(account, base)
@@ -200,6 +204,7 @@ def redacted_config(config):
                 "api_base": string(a.get("api_base")),
                 "enabled": a.get("enabled", True) is True,
                 "bearer_prefix": a.get("bearer_prefix") is True,
+                "login_format": a.get("login_format") if a.get("login_format") in ("json", "form") else "json",
                 "targets": list_text(a.get("targets", [])),
                 "key": account_key(a, result["api_base"]),
                 "password": "",
