@@ -51,6 +51,12 @@
             "description": "Authorization 添加 Bearer 前缀（仅服务要求时启用）",
             "default": false
           },
+          "login_format": {
+            "type": "string",
+            "description": "登录 POST 请求体：json（推荐，Dio 默认）或 form（旧版表单兼容）",
+            "default": "json",
+            "hint": "只影响登录请求，不自动重复尝试密码；手机 APP 真实协议仍须以抓包为准"
+          },
           "targets": {
             "type": "list",
             "description": "此账号专属推送会话（留空使用全局群聊列表）",
