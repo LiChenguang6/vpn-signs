@@ -90,6 +90,7 @@ jobs:
                               data=body.get("data")
                               if isinstance(data,dict):
                                   print("LOGIN_DATA_KEYS",list(data.keys())[:12],flush=True)
+                                  print("LOGIN_AUTH_FLAGS", {k:data.get(k) for k in ("is_recaptcha","is_pow","pow_difficulty","is_email_verify")},flush=True)
                           else: print("LOGIN_JSON_TYPE",type(body).__name__,flush=True)
                       except (ValueError,UnicodeDecodeError):
                           print("LOGIN_BODY_TYPE", "HTML" if raw.lstrip().startswith(b"<") else "nonjson",flush=True)
