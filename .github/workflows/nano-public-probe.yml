@@ -45,6 +45,8 @@ jobs:
             (api+"/user/checkinStatus", "python-urllib"),
             (api+"/user/checkinStatus", "Dart/3.7 (dart:io)"),
             (api+"/user/info", "Dart/3.7 (dart:io)"),
+            (api+"/user/checkinStatus", "Dart/3.11 (dart:io)"),
+            (api+"/user/checkinStatus", "Dart/3.11.5 (dart:io)"),
           ]
           for url,ua in probes:
               print("API_PROBE",url,"UA",ua,flush=True)
