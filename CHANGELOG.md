@@ -1,5 +1,11 @@
 # 更新记录
 
+## v0.3.2
+
+- 根据 Nano APP 的 Dio 网络库和 V2Board 接口文档，默认把登录请求体从表单改为 JSON；保留 per-account 表单兼容选项。
+- AstrBot 原生视图、配置 schema 和配置校验支持 per-account 登录格式；保留旧账号密码，单次测试只请求一次。
+- 新增 JSON 和显式表单请求测试，修订 API 协议说明；尚未用真实 Nano 账号端到端验证。
+
 ## v0.3.1
 
 - 将“网络、TLS 或 JSON 响应异常”拆为 DNS、TCP、超时、TLS/证书、HTTP(S) 代理、HTTP 200 空正文、HTML 非 JSON 和其他非 JSON 响应，避免错误指引。
