@@ -28,7 +28,7 @@ async def check(root):
         ],
     )
     await plugin.initialize()  # A malformed config must not prevent startup.
-    assert len(context.registered_web_apis) == 6
+    assert len(context.registered_web_apis) == 7
     assert plugin.task and not plugin.task.done()
     app = dashboard_app(plugin, context, source)
     base = "/api/v1/plugins/extensions/nano_checkin/"
@@ -68,6 +68,22 @@ async def check(root):
             await client.post(base + "run", headers=headers, json={})
             api.checkin.assert_awaited_once()
             assert (await client.get(base + "status", headers=headers)).json()["completed"] == 1
+            assert (await client.post(base + "reset-attempts", json={
+                "key": c["accounts"][0]["key"]
+            })).status_code == 401
+            invalid_reset = await client.post(
+                base + "reset-attempts", headers=headers, json={"key": "unknown"}
+            )
+            assert invalid_reset.status_code == 400
+            reset = await client.post(
+                base + "reset-attempts",
+                headers=headers,
+                json={"key": c["accounts"][0]["key"]},
+            )
+            assert reset.status_code == 200, reset.text
+            assert "已保留" in reset.json()["message"]
+            await client.post(base + "run", headers=headers, json={})
+            api.checkin.assert_awaited_once()
             assert Path(config.config_path).stat().st_mode & 0o777 == 0o600
         await plugin.notify("local:GroupMessage:123", "local test")
         assert isinstance(context.send_message.await_args.args[1], MessageChain)
