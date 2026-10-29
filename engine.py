@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import os
+import socket
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -66,14 +67,56 @@ class NanoAPI:
                     raw.extend(chunk)
                     if len(raw) > 65536:
                         raise CheckinError("接口响应过大")
-                body = json.loads(raw)
+                try:
+                    body = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    if not raw:
+                        raise CheckinError(
+                            "接口返回 HTTP 200，但响应正文为空；可能是服务端故障或 API 地址已变更"
+                        ) from None
+                    if bytes(raw).lstrip().startswith(b"<"):
+                        raise CheckinError(
+                            "接口返回 HTTP 200，但内容是 HTML 而不是 JSON；"
+                            "请检查 API 根地址、代理验证页或服务器防护页"
+                        ) from None
+                    raise CheckinError(
+                        "接口返回 HTTP 200，但不是有效 JSON；请核对 Nano API 地址与接口协议"
+                    ) from None
                 if not isinstance(body, dict):
                     raise CheckinError("接口返回结构不兼容")
                 if body.get("success") is False or body.get("status") is False:
                     raise CheckinError("服务端拒绝请求，请核对账号、验证要求或签到状态")
                 return body
-        except (TimeoutError, aiohttp.ClientError, ValueError):
-            raise CheckinError("网络、TLS 或 JSON 响应异常，请核对服务地址") from None
+        except asyncio.TimeoutError:
+            raise CheckinError(
+                "Nano API 请求超时（25 秒）；请检查 AstrBot 容器网络、代理或服务端状态"
+            ) from None
+        except aiohttp.ClientConnectorCertificateError:
+            raise CheckinError(
+                "Nano API TLS 证书校验失败；请检查域名、证书与群晖容器系统时间，"
+                "不要关闭 HTTPS 证书验证"
+            ) from None
+        except aiohttp.ClientSSLError:
+            raise CheckinError(
+                "Nano API TLS 握手失败；请检查 HTTPS 地址、代理或服务端 TLS 配置"
+            ) from None
+        except (aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError):
+            raise CheckinError(
+                "AstrBot 容器 HTTP(S) 代理连接失败或拒绝请求；"
+                "请检查 HTTPS_PROXY / HTTP_PROXY 环境变量和代理服务"
+            ) from None
+        except aiohttp.ClientConnectorError as exc:
+            if isinstance(exc.os_error, socket.gaierror):
+                raise CheckinError(
+                    "Nano API 域名 DNS 解析失败；请检查服务地址及群晖容器 DNS"
+                ) from None
+            raise CheckinError(
+                "无法连接 Nano API 服务器；请检查服务地址、网络出口和端口"
+            ) from None
+        except aiohttp.ClientError:
+            raise CheckinError(
+                "Nano API 连接中断或 HTTP 传输异常；请检查服务端和代理状态"
+            ) from None
 
     async def login(self):
         if not self.email or not self.password:

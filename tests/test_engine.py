@@ -1,11 +1,12 @@
 import asyncio
 import copy
 import json
+import socket
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -326,6 +327,39 @@ class APITests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("password", str(cm.exception))
 
         await self.api_with(self.app(login), check)
+
+    async def test_empty_and_html_responses_have_actionable_messages(self):
+        cases = [
+            (b"", "响应正文为空"),
+            (b"<!doctype html><title>Proxy verification</title>", "HTML 而不是 JSON"),
+            (b"not json", "不是有效 JSON"),
+        ]
+        for payload, expected in cases:
+            async def login(_request):
+                return web.Response(body=payload, content_type="text/html")
+
+            async def check(api):
+                with self.assertRaisesRegex(CheckinError, expected) as cm:
+                    await api.login()
+                self.assertNotIn("test&password=中文", str(cm.exception))
+
+            with self.subTest(expected=expected):
+                await self.api_with(self.app(login), check)
+
+    async def test_connection_errors_identify_dns_tls_timeout_and_proxy(self):
+        problems = [
+            (asyncio.TimeoutError(), "请求超时"),
+            (aiohttp.ClientConnectorError(None, socket.gaierror(socket.EAI_NONAME, "not found")), "DNS"),
+            (aiohttp.ClientSSLError(None, OSError("tls issue")), "TLS 握手失败"),
+            (aiohttp.ClientProxyConnectionError(None, OSError("proxy failed")), "代理连接失败"),
+        ]
+        for problem, expected in problems:
+            session = Mock()
+            session.request.side_effect = problem
+            api = NanoAPI(session, "https://example.test/api/v1", "one@example.test", "private-password")
+            with self.subTest(expected=expected), self.assertRaisesRegex(CheckinError, expected) as cm:
+                await api.login()
+            self.assertNotIn("private-password", str(cm.exception))
 
     async def test_unrecognized_login_response_rejected(self):
         async def login(request):
