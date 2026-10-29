@@ -64,7 +64,7 @@ function renderAccounts(accounts) {
     row.dataset.key = a.key || "";
     row.dataset.hasPassword = String(!!a.password_set);
     row.innerHTML =
-      '<div class="toolbar"><label><input class="active" type="checkbox"> 启用此账号</label><div><button class="loginTest secondary">测试登录</button> <button class="run secondary">立即签到</button> <button class="remove danger">删除</button></div></div><div class="grid"><div><label>账号备注</label><input class="name" placeholder="例如：主账号"></div><div><label>登录邮箱 / 账号</label><input class="email" autocomplete="off"></div><div><label>登录密码</label><input class="password" type="password" autocomplete="new-password"></div><div><label>登录提交格式</label><select class="loginFormat"><option value="json">JSON（推荐，Dio 默认）</option><option value="form">表单（旧版兼容）</option></select></div></div><details><summary>账号专属 API 和推送设置</summary><label>API 根地址（留空使用默认地址）</label><input class="accountBase" type="url"><label><input class="bearer" type="checkbox"> 登录返回的 Authorization 需要添加 Bearer 前缀</label><label>专属推送会话（每行一个；留空使用全局目标）</label><textarea class="destinations"></textarea></details>';
+      '<div class="toolbar"><label><input class="active" type="checkbox"> 启用此账号</label><div><button class="loginTest secondary">测试登录</button> <button class="run secondary">立即签到</button> <button class="resetAttempts danger">清除失败记录并重置次数</button> <button class="remove danger">删除</button></div></div><div class="grid"><div><label>账号备注</label><input class="name" placeholder="例如：主账号"></div><div><label>登录邮箱 / 账号</label><input class="email" autocomplete="off"></div><div><label>登录密码</label><input class="password" type="password" autocomplete="new-password"></div><div><label>登录提交格式</label><select class="loginFormat"><option value="json">JSON（推荐，Dio 默认）</option><option value="form">表单（旧版兼容）</option></select></div></div><details><summary>账号专属 API 和推送设置</summary><label>API 根地址（留空使用默认地址）</label><input class="accountBase" type="url"><label><input class="bearer" type="checkbox"> 登录返回的 Authorization 需要添加 Bearer 前缀</label><label>专属推送会话（每行一个；留空使用全局目标）</label><textarea class="destinations"></textarea></details>';
     row.querySelector(".name").value = a.name || "";
     row.querySelector(".email").value = a.email || "";
     row.querySelector(".password").value = a.password || "";
@@ -88,6 +88,12 @@ function renderAccounts(accounts) {
     };
     row.querySelector(".loginTest").disabled = !a.key;
     row.querySelector(".run").disabled = !a.key;
+    row.querySelector(".resetAttempts").disabled = !a.key;
+    row.querySelector(".resetAttempts").onclick = async () => {
+      if (await ask(
+        "确认清除此账号的失败历史，并重置当前计划时段的自动和手动尝试次数？成功记录和今日已完成状态会保留；如果已过计划时间，自动签到可能立即重试。"
+      )) action("/api/reset-attempts", { key: a.key });
+    };
     row.querySelector(".loginTest").onclick = () =>
       action("/api/login", { key: a.key });
     row.querySelector(".run").onclick = async () => {
@@ -144,7 +150,7 @@ async function refreshStatus() {
     s.accounts.map((a) => [
       a.name,
       !a.enabled ? "已禁用" : a.done ? "任务完成" : "未完成",
-      a.attempts,
+      `${a.attempts} / ${s.max_attempts}（手动 ${a.manual_attempts} / ${s.max_attempts}）`,
       a.message,
     ]),
   );
