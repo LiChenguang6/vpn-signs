@@ -37,4 +37,24 @@ jobs:
                           print("NOT_JSON",flush=True)
               except Exception as exc:
                   print("ERROR",type(exc).__name__,str(exc)[:190],flush=True)
+          print("=== PUBLIC API ENDPOINTS (NO CREDENTIALS) ===",flush=True)
+          api="https://account.alibaba.alicdn.men/api/v1"
+          probes=[
+            (api, "python-urllib"),
+            (api+"/passport/auth/login", "python-urllib"),
+            (api+"/user/checkinStatus", "python-urllib"),
+            (api+"/user/checkinStatus", "Dart/3.7 (dart:io)"),
+            (api+"/user/info", "Dart/3.7 (dart:io)"),
+          ]
+          for url,ua in probes:
+              print("API_PROBE",url,"UA",ua,flush=True)
+              try:
+                  req=urllib.request.Request(url,headers={"Accept":"application/json","User-Agent":ua},method="GET")
+                  with urllib.request.urlopen(req,timeout=12,context=ssl.create_default_context()) as resp:
+                      b=resp.read(256)
+                      print("API_RESULT",resp.status,"LEN_UP_TO_256",len(b),"CT",resp.headers.get("Content-Type"),"CL",resp.headers.get("Content-Length"),"SERVER",resp.headers.get("Server"),"DATE",resp.headers.get("Date"),flush=True)
+              except urllib.error.HTTPError as exc:
+                  print("API_HTTPERROR",exc.code,"CT",exc.headers.get("Content-Type"),"CL",exc.headers.get("Content-Length"),flush=True)
+              except Exception as exc:
+                  print("API_ERROR",type(exc).__name__,str(exc)[:120],flush=True)
           PY
