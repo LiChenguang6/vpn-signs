@@ -282,6 +282,8 @@ class APITests(unittest.IsolatedAsyncioTestCase):
 
     async def login(self, request):
         self.assertNotIn("Authorization", request.headers)
+        self.assertEqual(request.headers["User-Agent"], "Dart/3.11 (dart:io)")
+        self.assertEqual(request.headers["Accept"], "application/json")
         self.assertTrue(request.content_type.startswith("application/json"))
         data = await request.json()
         self.assertEqual(data["email"], "one@example.test")
@@ -293,6 +295,8 @@ class APITests(unittest.IsolatedAsyncioTestCase):
 
         async def status(request):
             self.assertEqual(request.headers["Authorization"], "local-auth-data")
+            self.assertEqual(request.headers["User-Agent"], "Dart/3.11 (dart:io)")
+            self.assertEqual(request.headers["Accept"], "application/json")
             seen.append("status")
             r = web.StreamResponse()
             await r.prepare(request)
@@ -315,6 +319,7 @@ class APITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_login_form_is_explicit_opt_in(self):
         async def login(request):
+            self.assertEqual(request.headers["User-Agent"], "Dart/3.11 (dart:io)")
             self.assertEqual(request.content_type, "application/x-www-form-urlencoded")
             data = await request.post()
             self.assertEqual(data["email"], "one@example.test")

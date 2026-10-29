@@ -13,6 +13,13 @@ import aiohttp
 
 PUSH_TIMEOUT = 30
 
+# Nano_v8a.apk embeds Flutter/Dart 3.11.5 (android_arm64). The public Nano API
+# responds HTTP 200 with Content-Length: 0 to Python client identifiers, while
+# an anonymous Dart client identifier receives a structured 403 JSON response.
+# Use an app-like User-Agent to avoid misclassifying a server-side client filter
+# as a broken API. Do not turn off TLS validation or bypass auth challenges.
+NANO_HEADERS = {"User-Agent": "Dart/3.11 (dart:io)", "Accept": "application/json"}
+
 try:
     from .configuration import (
         ConfigurationError,
@@ -45,7 +52,7 @@ class NanoAPI:
         if login_format not in ("json", "form"):
             raise ConfigurationError("登录请求格式必须是 json 或 form")
         self.login_format = login_format
-        self.headers = {}
+        self.headers = dict(NANO_HEADERS)
 
     async def request(self, method, path, data=None):
         # Dio sends Map payloads as JSON by default; legacy V2Board deployments may use forms.
@@ -131,7 +138,7 @@ class NanoAPI:
     async def login(self):
         if not self.email or not self.password:
             raise CheckinError("未填写账号或密码")
-        self.headers = {}
+        self.headers = dict(NANO_HEADERS)
         body = await self.request(
             "POST", "/passport/auth/login", {"email": self.email, "password": self.password}
         )
@@ -148,7 +155,7 @@ class NanoAPI:
             raise CheckinError("登录未成功或未返回 data.auth_data；请核对密码、验证码及接口协议")
         # The token is used only in memory for this run and is never saved or returned to a panel.
         prefix = "Bearer " if self.bearer and not token.lower().startswith("bearer ") else ""
-        self.headers = {"Authorization": prefix + token}
+        self.headers = {**NANO_HEADERS, "Authorization": prefix + token}
 
     async def checkin(self):
         await self.login()
