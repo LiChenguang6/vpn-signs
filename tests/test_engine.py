@@ -79,6 +79,9 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.apis["one@example.test"].checkin.await_count, 1)
         self.time += timedelta(minutes=16)
         await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 1)
+        self.time += timedelta(minutes=44)
+        await self.engine.tick()
         self.assertEqual(self.apis["one@example.test"].checkin.await_count, 2)
         self.assertEqual(self.apis["two@example.test"].checkin.await_count, 1)
 
@@ -94,38 +97,111 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state()["scheduled_attempts"], 1)
         self.assertEqual(self.state()["manual_attempts"], 3)
 
+    async def test_hourly_auto_retry_beyond_three_failures_until_success(self):
+        api = self.apis["one@example.test"]
+        api.checkin.side_effect = CheckinError("模拟失败")
+        for attempt in range(5):
+            await self.engine.tick()
+            self.assertEqual(api.checkin.await_count, attempt + 1)
+            self.assertEqual(self.state()["scheduled_attempts"], attempt + 1)
+            # A one-minute polling worker must not repeat a failed request.
+            self.time += timedelta(minutes=59)
+            await self.engine.tick()
+            self.assertEqual(api.checkin.await_count, attempt + 1)
+            self.time += timedelta(minutes=1)
+        api.checkin.side_effect = None
+        api.checkin.return_value = "签到成功（提交后复查确认今日已签到；奖励以 Nano APP 为准）"
+        await self.engine.tick()
+        self.assertEqual(api.checkin.await_count, 6)
+        self.assertTrue(self.state()["done"])
+        self.assertEqual(self.engine.overview()["completed"], 2)
+        self.assertIn("签到成功", self.state()["message"])
+        self.assertEqual(self.engine.overview()["accounts"][0]["attempts"], 6)
+        self.time += timedelta(hours=1)
+        await self.engine.tick()
+        self.assertEqual(api.checkin.await_count, 6)
+
     async def test_new_scheduled_time_resets_auto_budget_same_day(self):
         self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
-        for index in range(3):
+        for _ in range(4):
             await self.engine.tick()
-            self.time += timedelta(minutes=16)
-        self.assertEqual(self.state()["scheduled_attempts"], 3)
-        self.assertIn("上限", await self.engine.tick())
-        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 3)
-        self.cfg["daily_time"] = "10:00"
-        self.time = self.time.replace(hour=9, minute=59)
-        await self.engine.tick()
-        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 3)
-        self.time += timedelta(minutes=1)
+            self.time += timedelta(hours=1)
+        self.assertEqual(self.state()["scheduled_attempts"], 4)
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
+        self.cfg["daily_time"] = "14:00"
+        self.time = self.time.replace(hour=13, minute=59)
         await self.engine.tick()
         self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
+        self.time += timedelta(minutes=1)
+        await self.engine.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 5)
         self.assertEqual(self.state()["scheduled_attempts"], 1)
 
-    async def test_new_day_reset_and_restart_after_exhaustion(self):
+    async def test_new_day_reset_and_restart_after_repeated_failures(self):
         self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
-        for _ in range(3):
+        for attempt in range(4):
             await self.engine.tick()
-            self.time += timedelta(minutes=16)
+            if attempt < 3:
+                self.time += timedelta(hours=1)
         fresh = Engine(self.cfg, self.path, self.notify, lambda a: self.apis[a["email"]])
         fresh.now = self.engine.now
-        self.assertIn("上限", await fresh.tick())
+        await fresh.tick()
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
         self.time += timedelta(days=1)
         self.time = self.time.replace(hour=8, minute=0)
         await fresh.tick()
-        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 4)
+        self.assertEqual(self.apis["one@example.test"].checkin.await_count, 5)
         self.assertEqual(fresh.state["accounts"][
             account_key(self.cfg["accounts"][0], self.cfg["api_base"])
         ]["scheduled_attempts"], 1)
+
+    async def test_existing_v035_retry_deadline_migrates_to_one_hour(self):
+        key = account_key(self.cfg["accounts"][0], self.cfg["api_base"])
+        self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
+        self.engine.state["accounts"][key] = {
+            "day": self.time.date().isoformat(),
+            "done": False,
+            "schedule_slot": self.engine.slot_id(
+                self.time, self.cfg["daily_time"], self.cfg["timezone"]
+            ),
+            "scheduled_attempts": 3,
+            "scheduled_next_retry": self.time.timestamp() + 15 * 60,
+        }
+        self.engine.save()
+        fresh = Engine(self.cfg, self.path, self.notify, lambda a: self.apis[a["email"]])
+        fresh.now = self.engine.now
+        self.time += timedelta(minutes=59)
+        await fresh.tick()
+        self.apis["one@example.test"].checkin.assert_not_awaited()
+        self.time += timedelta(minutes=1)
+        await fresh.tick()
+        self.apis["one@example.test"].checkin.assert_awaited_once()
+        self.assertEqual(fresh.state["accounts"][key]["scheduled_attempts"], 4)
+
+    async def test_unexpected_runtime_failure_retries_hourly(self):
+        api = self.apis["one@example.test"]
+        api.checkin.side_effect = RuntimeError("fixture unexpected")
+        await self.engine.tick()
+        self.assertEqual(api.checkin.await_count, 1)
+        self.assertIn("运行异常", self.state()["message"])
+        self.time += timedelta(minutes=59)
+        await self.engine.tick()
+        self.assertEqual(api.checkin.await_count, 1)
+        self.time += timedelta(minutes=1)
+        await self.engine.tick()
+        self.assertEqual(api.checkin.await_count, 2)
+
+    async def test_auto_retry_pauses_when_disabled_and_resumes_at_next_hour(self):
+        api = self.apis["one@example.test"]
+        api.checkin.side_effect = CheckinError("临时故障")
+        await self.engine.tick()
+        self.cfg["enabled"] = False
+        self.time += timedelta(hours=2)
+        await self.engine.tick()
+        self.assertEqual(api.checkin.await_count, 1)
+        self.cfg["enabled"] = True
+        await self.engine.tick()
+        self.assertEqual(api.checkin.await_count, 2)
 
     async def test_reset_account_failures_and_budget_preserves_success_and_pending(self):
         self.apis["one@example.test"].checkin.side_effect = CheckinError("模拟失败")
@@ -567,6 +643,34 @@ class APITests(unittest.IsolatedAsyncioTestCase):
 
         await self.api_with(app, check)
         self.assertEqual(hits, [])
+
+    async def test_post_then_status_flip_reports_success_and_no_duplicate(self):
+        seen = []
+        async def status(_request):
+            seen.append("status")
+            count = seen.count("status")
+            return web.json_response({"data": {"can_checkin": count == 1}})
+        async def checkin(_request):
+            seen.append("checkin")
+            return web.json_response({"message": "操作成功"})
+        async def check(api):
+            message = await api.checkin()
+            self.assertEqual(
+                message,
+                "签到成功（提交后复查确认今日已签到；奖励以 Nano APP 为准）",
+            )
+        await self.api_with(self.app(self.login, status, checkin), check)
+        self.assertEqual(seen, ["status", "checkin", "status"])
+
+    async def test_post_then_status_stays_available_is_not_success(self):
+        async def status(_request):
+            return web.json_response({"data": {"can_checkin": True}})
+        async def checkin(_request):
+            return web.json_response({"message": "已提交"})
+        async def check(api):
+            with self.assertRaisesRegex(CheckinError, "签到结果无法确认"):
+                await api.checkin()
+        await self.api_with(self.app(self.login, status, checkin), check)
 
     async def test_unknown_checkin_result_not_success(self):
         async def status(request):
